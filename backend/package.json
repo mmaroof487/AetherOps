@@ -1,0 +1,17 @@
+{
+  "name": "shopops-backend",
+  "version": "1.0.0",
+  "description": "ShopOps Infra AI Backend — Ollama integration",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "autocannon": "^8.0.0",
+    "cors": "^2.8.6",
+    "express": "^4.22.1"
+  }
+}

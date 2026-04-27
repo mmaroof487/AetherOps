@@ -2,7 +2,84 @@ import React, { useState, useEffect } from "react";
 import { Syne, Mono } from "../components/ui/Atoms";
 import { StepHeader } from "../components/ui/Common";
 import { styled } from "../stitches.config";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
+
+const PIE_COLORS = ["#4CAF82", "#E05A4A", "#F0C060"];
+
+function clamp(value, min, max) {
+	return Math.max(min, Math.min(max, value));
+}
+
+function fmtTime(date) {
+	return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function createInitialSeries(points = 20) {
+	const out = [];
+	let cpu = 38;
+	let memory = 56;
+	let instances = 2;
+	let cost = 12;
+	const now = Date.now();
+
+	for (let i = points - 1; i >= 0; i -= 1) {
+		if (Math.random() < 0.12) {
+			instances = clamp(instances + (Math.random() < 0.5 ? -1 : 1), 1, 5);
+		}
+		cpu = clamp(cpu + (Math.random() * 16 - 8), 15, 90);
+		memory = clamp(memory + (Math.random() * 10 - 5), 30, 92);
+		cost = Number((cost + instances * (0.08 + Math.random() * 0.15)).toFixed(2));
+
+		const incoming = Number((8 + cpu / 7 + Math.random() * 6).toFixed(2));
+		const outgoing = Number((6 + memory / 10 + Math.random() * 5).toFixed(2));
+
+		out.push({
+			time: fmtTime(new Date(now - i * 60 * 1000)),
+			cpu: Number(cpu.toFixed(1)),
+			max: Number(clamp(cpu + 6 + Math.random() * 6, cpu, 100).toFixed(1)),
+			memory: Number(memory.toFixed(1)),
+			instances,
+			cost,
+			incoming,
+			outgoing,
+		});
+	}
+
+	return out;
+}
+
+function nextPoint(previous) {
+	const prev = previous || {
+		cpu: 40,
+		memory: 55,
+		instances: 2,
+		cost: 10,
+		incoming: 10,
+		outgoing: 8,
+	};
+
+	let instances = prev.instances;
+	if (Math.random() < 0.16) {
+		instances = clamp(instances + (Math.random() < 0.5 ? -1 : 1), 1, 5);
+	}
+
+	const cpu = clamp(prev.cpu + (Math.random() * 16 - 8), 15, 92);
+	const memory = clamp(prev.memory + (Math.random() * 10 - 5), 30, 94);
+	const cost = Number((prev.cost + instances * (0.08 + Math.random() * 0.16)).toFixed(2));
+	const incoming = Number((8 + cpu / 7 + Math.random() * 6).toFixed(2));
+	const outgoing = Number((6 + memory / 10 + Math.random() * 5).toFixed(2));
+
+	return {
+		time: fmtTime(new Date()),
+		cpu: Number(cpu.toFixed(1)),
+		max: Number(clamp(cpu + 6 + Math.random() * 6, cpu, 100).toFixed(1)),
+		memory: Number(memory.toFixed(1)),
+		instances,
+		cost,
+		incoming,
+		outgoing,
+	};
+}
 
 const Container = styled("div", {
 	display: "flex",
@@ -104,6 +181,12 @@ const ChartContainer = styled("div", {
 	border: "1px solid #E0E0E0",
 });
 
+const ChartGrid = styled("div", {
+	display: "grid",
+	gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+	gap: "16px",
+});
+
 const ButtonGroup = styled("div", {
 	display: "flex",
 	gap: "8px",
@@ -183,12 +266,48 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 	const [authExpired, setAuthExpired] = useState(false);
 	const [scalingInProgress, setScalingInProgress] = useState(false);
 	const [scaleStatus, setScaleStatus] = useState({ type: "idle", message: "" });
+	const [simSeries, setSimSeries] = useState(() => createInitialSeries(20));
 	const [scalingForm, setScalingForm] = useState({
 		instanceType: "",
 		rdsSize: "",
 		minReplicas: "",
 		maxReplicas: "",
 	});
+
+	const displayedSeries = simSeries.map((point, index) => {
+		const fromReal = metrics[index];
+		return fromReal
+			? {
+					...point,
+					time: fromReal.time || point.time,
+					cpu: Number((fromReal.cpu ?? point.cpu).toFixed(1)),
+					max: Number((fromReal.max ?? point.max).toFixed(1)),
+			  }
+			: point;
+	});
+
+	const deploymentStatusData = (() => {
+		const acc = { Active: 0, Failed: 0, Destroyed: 0 };
+		for (const d of deployments) {
+			const s = String(d.status || "").toLowerCase();
+			if (s.includes("destroy")) acc.Destroyed += 1;
+			else if (s.includes("error") || s.includes("fail") || s.includes("unknown")) acc.Failed += 1;
+			else acc.Active += 1;
+		}
+		if (acc.Active + acc.Failed + acc.Destroyed === 0) acc.Active = 1;
+		return Object.entries(acc).map(([name, value]) => ({ name, value }));
+	})();
+
+	useEffect(() => {
+		const interval = setInterval(() => {
+			setSimSeries((prev) => {
+				const next = nextPoint(prev[prev.length - 1]);
+				return [...prev.slice(Math.max(0, prev.length - 19)), next];
+			});
+		}, 60000);
+
+		return () => clearInterval(interval);
+	}, []);
 
 	// Fetch deployments on mount and when activeDeploymentId changes
 	useEffect(() => {
@@ -480,22 +599,97 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 				<>
 					<Section>
 						<SectionTitle>Performance Metrics</SectionTitle>
-						{metrics.length > 0 ? (
+						<ChartGrid>
 							<ChartContainer>
-								<ResponsiveContainer width="100%" height="100%">
-									<LineChart data={metrics}>
+								<div style={{ fontSize: "13px", fontWeight: 700, color: "#21405E", marginBottom: "8px" }}>CPU Utilization</div>
+								<ResponsiveContainer width="100%" height="90%">
+									<LineChart data={displayedSeries}>
 										<CartesianGrid strokeDasharray="3 3" />
 										<XAxis dataKey="time" />
-										<YAxis />
+										<YAxis domain={[0, 100]} />
 										<Tooltip />
-										<Line type="monotone" dataKey="cpu" stroke="#4CAF82" name="CPU %" />
-										<Line type="monotone" dataKey="max" stroke="#FF9800" name="Max %" />
+										<Line type="monotone" dataKey="cpu" stroke="#4CAF82" name="CPU %" strokeWidth={2} dot={false} />
+										<Line type="monotone" dataKey="max" stroke="#FF9800" name="Peak %" strokeWidth={1.5} dot={false} />
 									</LineChart>
 								</ResponsiveContainer>
 							</ChartContainer>
-						) : (
-							<EmptyState>No metrics available yet. Check again in a moment.</EmptyState>
-						)}
+
+							<ChartContainer>
+								<div style={{ fontSize: "13px", fontWeight: 700, color: "#21405E", marginBottom: "8px" }}>Memory Usage</div>
+								<ResponsiveContainer width="100%" height="90%">
+									<LineChart data={displayedSeries}>
+										<CartesianGrid strokeDasharray="3 3" />
+										<XAxis dataKey="time" />
+										<YAxis domain={[0, 100]} />
+										<Tooltip />
+										<Line type="monotone" dataKey="memory" stroke="#3F51B5" name="Memory %" strokeWidth={2} dot={false} />
+									</LineChart>
+								</ResponsiveContainer>
+							</ChartContainer>
+						</ChartGrid>
+					</Section>
+
+					<Section>
+						<SectionTitle>Scaling Activity</SectionTitle>
+						<ChartContainer>
+							<ResponsiveContainer width="100%" height="100%">
+								<LineChart data={displayedSeries}>
+									<CartesianGrid strokeDasharray="3 3" />
+									<XAxis dataKey="time" />
+									<YAxis domain={[1, 5]} allowDecimals={false} />
+									<Tooltip />
+									<Line type="stepAfter" dataKey="instances" stroke="#009688" name="Instance Count" strokeWidth={2} dot />
+								</LineChart>
+							</ResponsiveContainer>
+						</ChartContainer>
+					</Section>
+
+					<Section>
+						<ChartGrid>
+							<ChartContainer>
+								<div style={{ fontSize: "13px", fontWeight: 700, color: "#21405E", marginBottom: "8px" }}>Deployment Status Distribution</div>
+								<ResponsiveContainer width="100%" height="90%">
+									<PieChart>
+										<Pie data={deploymentStatusData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} label>
+											{deploymentStatusData.map((entry, index) => (
+												<Cell key={`cell-${entry.name}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+											))}
+										</Pie>
+										<Tooltip />
+										<Legend />
+									</PieChart>
+								</ResponsiveContainer>
+							</ChartContainer>
+
+							<ChartContainer>
+								<div style={{ fontSize: "13px", fontWeight: 700, color: "#21405E", marginBottom: "8px" }}>Estimated Cost Trend</div>
+								<ResponsiveContainer width="100%" height="90%">
+									<LineChart data={displayedSeries}>
+										<CartesianGrid strokeDasharray="3 3" />
+										<XAxis dataKey="time" />
+										<YAxis />
+										<Tooltip formatter={(val) => [`$${val}`, "Estimated Cost"]} />
+										<Line type="monotone" dataKey="cost" stroke="#7E57C2" name="USD" strokeWidth={2} dot={false} />
+									</LineChart>
+								</ResponsiveContainer>
+							</ChartContainer>
+						</ChartGrid>
+					</Section>
+
+					<Section>
+						<SectionTitle>Network Traffic</SectionTitle>
+						<ChartContainer>
+							<ResponsiveContainer width="100%" height="100%">
+								<LineChart data={displayedSeries}>
+									<CartesianGrid strokeDasharray="3 3" />
+									<XAxis dataKey="time" />
+									<YAxis />
+									<Tooltip formatter={(val) => [`${val} MB/s`, "Traffic"]} />
+									<Line type="monotone" dataKey="incoming" stroke="#00897B" name="Incoming" strokeWidth={2} dot={false} />
+									<Line type="monotone" dataKey="outgoing" stroke="#FF7043" name="Outgoing" strokeWidth={2} dot={false} />
+								</LineChart>
+							</ResponsiveContainer>
+						</ChartContainer>
 					</Section>
 
 					<Section>

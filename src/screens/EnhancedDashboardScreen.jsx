@@ -180,6 +180,9 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 	const [metrics, setMetrics] = useState([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState(null);
+	const [authExpired, setAuthExpired] = useState(false);
+	const [scalingInProgress, setScalingInProgress] = useState(false);
+	const [scaleStatus, setScaleStatus] = useState({ type: "idle", message: "" });
 	const [scalingForm, setScalingForm] = useState({
 		instanceType: "",
 		rdsSize: "",
@@ -196,12 +199,15 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 				});
 				const data = await response.json();
 				if (data.ok) {
-					setDeployments(data.deployments || []);
+					const allDeployments = data.deployments || [];
+					setDeployments(allDeployments);
+					const scalableDeployments = allDeployments.filter((d) => d.scalable !== false);
+					const preferredList = scalableDeployments.length > 0 ? scalableDeployments : allDeployments;
 					if (activeDeploymentId) {
-						const deployment = data.deployments.find((d) => d.deploymentId === activeDeploymentId);
-						setSelectedDeployment(deployment || data.deployments[0]);
-					} else if (data.deployments.length > 0) {
-						setSelectedDeployment(data.deployments[0]);
+						const deployment = allDeployments.find((d) => d.deploymentId === activeDeploymentId);
+						setSelectedDeployment(deployment || preferredList[0]);
+					} else if (preferredList.length > 0) {
+						setSelectedDeployment(preferredList[0]);
 					}
 				}
 			} catch (err) {
@@ -219,11 +225,22 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 	// Fetch metrics for selected deployment
 	useEffect(() => {
 		if (!selectedDeployment?.deploymentId) return;
+		if (authExpired) return;
 
 		const fetchMetrics = async () => {
 			try {
 				const response = await fetch(`/api/metrics/${selectedDeployment.deploymentId}`, { credentials: "include" });
+				if (response.status === 401) {
+					setAuthExpired(true);
+					setError("AWS session expired. Please reconnect your AWS credentials and retry.");
+					return;
+				}
+
 				const data = await response.json();
+				if (!response.ok) {
+					console.error("Metrics error:", data?.error || `HTTP ${response.status}`);
+					return;
+				}
 				if (data.ok) {
 					// Convert AWS metrics to chart format
 					const chartData = (data.metrics || [])
@@ -244,10 +261,24 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 		fetchMetrics();
 		const interval = setInterval(fetchMetrics, 60000); // Refresh every 60 seconds
 		return () => clearInterval(interval);
-	}, [selectedDeployment?.deploymentId]);
+	}, [selectedDeployment?.deploymentId, authExpired]);
 
 	const handleScale = async () => {
-		if (!selectedDeployment?.deploymentId) return;
+		if (!selectedDeployment?.deploymentId) {
+			setError("Select a deployment before applying scaling changes.");
+			setScaleStatus({ type: "error", message: "Select a deployment first." });
+			return;
+		}
+		if (authExpired) {
+			setScaleStatus({ type: "error", message: "AWS session expired. Reconnect credentials first." });
+			alert("AWS session expired. Reconnect credentials first.");
+			return;
+		}
+
+		console.log("[scale] starting", { deploymentId: selectedDeployment.deploymentId, scalingForm });
+		setScalingInProgress(true);
+		setError("Applying scaling changes. This may take a few minutes...");
+		setScaleStatus({ type: "progress", message: "Applying scaling changes..." });
 
 		try {
 			const response = await fetch(`/api/scale/${selectedDeployment.deploymentId}`, {
@@ -256,6 +287,21 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 				credentials: "include",
 				body: JSON.stringify(scalingForm),
 			});
+			console.log("[scale] response", { status: response.status, ok: response.ok });
+
+			if (!response.ok) {
+				const data = await response.json().catch(() => ({}));
+				if (response.status === 401) {
+					setAuthExpired(true);
+					setError("AWS session expired. Please reconnect your AWS credentials and retry.");
+					setScaleStatus({ type: "error", message: "AWS session expired. Reconnect credentials first." });
+				}
+				throw new Error(data.error || `Scaling failed (HTTP ${response.status})`);
+			}
+
+			if (!response.body) {
+				throw new Error("Scale endpoint returned no stream body");
+			}
 
 			const reader = response.body.getReader();
 			const decoder = new TextDecoder();
@@ -270,7 +316,18 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 				for (const line of lines) {
 					try {
 						const json = JSON.parse(line.slice(6));
+						console.log("[scale] event", json);
+						if (json.type === "progress") {
+							setError(json.message || "Scaling in progress...");
+							setScaleStatus({ type: "progress", message: json.message || "Scaling in progress..." });
+						}
+						if (json.type === "error") {
+							setError(json.message || "Scaling failed.");
+							setScaleStatus({ type: "error", message: json.message || "Scaling failed." });
+						}
 						if (json.type === "complete") {
+							setError("Scaling completed successfully.");
+							setScaleStatus({ type: "success", message: "Scaling completed successfully." });
 							alert("Scaling completed successfully!");
 							setScalingForm({ instanceType: "", rdsSize: "", minReplicas: "", maxReplicas: "" });
 						}
@@ -280,12 +337,21 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 				}
 			}
 		} catch (err) {
+			setError(`Scaling error: ${err.message}`);
+			setScaleStatus({ type: "error", message: `Scaling error: ${err.message}` });
+			console.error("[scale] error", err);
 			alert(`Scaling error: ${err.message}`);
+		} finally {
+			setScalingInProgress(false);
 		}
 	};
 
 	const handleDestroy = async (depId) => {
 		if (!window.confirm("Are you sure you want to destroy this deployment? This cannot be undone.")) {
+			return;
+		}
+		if (authExpired) {
+			alert("AWS session expired. Reconnect credentials first.");
 			return;
 		}
 
@@ -295,6 +361,15 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 				headers: { "Content-Type": "application/json" },
 				credentials: "include",
 			});
+
+			if (!response.ok) {
+				const data = await response.json().catch(() => ({}));
+				if (response.status === 401) {
+					setAuthExpired(true);
+					setError("AWS session expired. Please reconnect your AWS credentials and retry.");
+				}
+				throw new Error(data.error || `Destroy failed (HTTP ${response.status})`);
+			}
 
 			const reader = response.body.getReader();
 			const decoder = new TextDecoder();
@@ -495,9 +570,25 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 								/>
 							</div>
 						</div>
-						<Button variant="primary" style={{ marginTop: "12px" }} onClick={handleScale}>
-							Apply Scaling Changes
+						<Button variant="primary" style={{ marginTop: "12px" }} onClick={handleScale} disabled={scalingInProgress}>
+							{scalingInProgress ? "Applying Scaling..." : "Apply Scaling Changes"}
 						</Button>
+						{scaleStatus.message && (
+							<div
+								style={{
+									marginTop: "8px",
+									fontSize: "12px",
+									fontWeight: 600,
+									color:
+										scaleStatus.type === "error"
+											? "#C62828"
+											: scaleStatus.type === "success"
+												? "#2E7D32"
+												: "#1565C0",
+								}}>
+								{scaleStatus.message}
+							</div>
+						)}
 					</Section>
 
 					{selectedDeployment.outputs && (

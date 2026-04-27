@@ -251,7 +251,8 @@ function summarizeTerraformError(errText = "") {
 
 function buildFallbackTerraform(architecture = {}, businessConfig = {}) {
 	const components = architecture?.components || {};
-	const includeAppServer = components.appServer ? 1 : 0;
+	// Default to creating an app server unless caller explicitly disables it.
+	const includeAppServer = components.appServer === null || components.appServer === false ? 0 : 1;
 	const includeStorage = components.storage ? 1 : 0;
 
 	return `# ShopOps fallback Terraform (deterministic template)
@@ -2354,7 +2355,7 @@ app.post("/api/deploy-all", async (req, res) => {
 			console.warn("[Deploy] Unauthorized attempt: Missing AWS credentials in session");
 			return res.status(401).json({
 				ok: false,
-				error: "No AWS credentials found. Please set credentials first via /api/auth/set-credentials",
+				error: "No AWS credentials found. Session may have expired or backend restarted. Reconnect via /api/auth/set-credentials.",
 			});
 		}
 
@@ -2600,7 +2601,7 @@ app.post("/api/deploy", async (req, res) => {
 		if (!req.session.awsCredentials) {
 			return res.status(401).json({
 				ok: false,
-				error: "No AWS credentials found. Please set credentials first via /api/auth/set-credentials",
+				error: "No AWS credentials found. Session may have expired or backend restarted. Reconnect via /api/auth/set-credentials.",
 			});
 		}
 
@@ -2667,6 +2668,20 @@ environment = "production"
 		// Helper to send SSE messages
 		const sendEvent = (type, data) => {
 			res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+		};
+
+		const summarizeScaleTerraformError = (errObj) => {
+			const raw = String(errObj?.stderr || errObj?.stdout || errObj?.message || "Scaling failed").replace(/\x1b\[[0-9;]*m/g, "");
+			const lines = raw
+				.split(/\r?\n/)
+				.map((line) => line.trim())
+				.filter(Boolean);
+
+			const errorLine = lines.find((line) => /^Error:/i.test(line));
+			if (errorLine) return errorLine;
+
+			const joined = lines.slice(0, 3).join(" | ");
+			return joined || "Scaling failed";
 		};
 
 		// Get AWS env variables from session
@@ -2737,7 +2752,22 @@ environment = "production"
 			});
 			sendEvent("progress", { step: 4, message: "✓ Infrastructure deployed" });
 		} catch (err) {
-			sendEvent("error", { message: "Terraform apply failed: " + err.message });
+			const rawApplyError = String(err.stderr || err.stdout || err.message || "Terraform apply failed");
+			if (/VpcLimitExceeded/i.test(rawApplyError)) {
+				const recentDeployments = fs
+					.readdirSync(DEPLOYMENTS_DIR)
+					.filter((name) => name.startsWith("deploy_"))
+					.sort((a, b) => b.localeCompare(a))
+					.slice(0, 5);
+
+				sendEvent("error", {
+					message:
+						"AWS VPC quota reached (VpcLimitExceeded). Destroy older deployments and retry. Suggested deployment IDs: " +
+						recentDeployments.join(", "),
+				});
+			} else {
+				sendEvent("error", { message: "Terraform apply failed: " + summarizeTerraformError(rawApplyError) });
+			}
 			res.end();
 			return;
 		}
@@ -2796,15 +2826,37 @@ app.get("/api/deployments", (req, res) => {
 			.readdirSync(DEPLOYMENTS_DIR)
 			.filter((name) => name.startsWith("deploy_"))
 			.map((name) => {
+				const dirPath = path.join(DEPLOYMENTS_DIR, name);
+				const hasTerraformConfig = fs.existsSync(path.join(dirPath, "main.tf"));
+				const dirStat = fs.statSync(dirPath);
 				try {
 					const deploymentInfoPath = path.join(DEPLOYMENTS_DIR, name, "deployment.json");
 					if (fs.existsSync(deploymentInfoPath)) {
-						return JSON.parse(fs.readFileSync(deploymentInfoPath, "utf8"));
+						return {
+							...JSON.parse(fs.readFileSync(deploymentInfoPath, "utf8")),
+							scalable: hasTerraformConfig,
+						};
 					}
-					return { deploymentId: name, status: "unknown" };
+					return {
+						deploymentId: name,
+						status: "unknown",
+						createdAt: dirStat.mtime.toISOString(),
+						scalable: hasTerraformConfig,
+					};
 				} catch {
-					return { deploymentId: name, status: "error" };
+					return {
+						deploymentId: name,
+						status: "error",
+						createdAt: dirStat.mtime.toISOString(),
+						scalable: hasTerraformConfig,
+					};
 				}
+			})
+			.sort((a, b) => {
+				const ta = new Date(a.createdAt || 0).getTime();
+				const tb = new Date(b.createdAt || 0).getTime();
+				if (tb !== ta) return tb - ta;
+				return String(b.deploymentId || "").localeCompare(String(a.deploymentId || ""));
 			});
 
 		res.json({ ok: true, deployments });
@@ -2823,11 +2875,12 @@ app.post("/api/destroy/:deploymentId", async (req, res) => {
 		if (!req.session.awsCredentials) {
 			return res.status(401).json({
 				ok: false,
-				error: "No AWS credentials found",
+				error: "No AWS credentials found. Session may have expired or backend restarted. Reconnect credentials.",
 			});
 		}
 
 		const deployDir = path.join(DEPLOYMENTS_DIR, deploymentId);
+		const mainTfPath = path.join(deployDir, "main.tf");
 
 		if (!fs.existsSync(deployDir)) {
 			return res.status(404).json({
@@ -2844,6 +2897,14 @@ app.post("/api/destroy/:deploymentId", async (req, res) => {
 		const sendEvent = (type, data) => {
 			res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
 		};
+
+		if (!fs.existsSync(mainTfPath)) {
+			sendEvent("error", {
+				message: `Scaling is unavailable for ${deploymentId}. This deployment is missing Terraform source (main.tf). Select a newer deployment or redeploy first.`,
+			});
+			res.end();
+			return;
+		}
 
 		const awsEnv = {
 			...process.env,
@@ -2882,7 +2943,7 @@ app.get("/api/metrics/:deploymentId", async (req, res) => {
 		if (!req.session.awsCredentials) {
 			return res.status(401).json({
 				ok: false,
-				error: "No AWS credentials found",
+				error: "No AWS credentials found. Session may have expired or backend restarted. Reconnect credentials.",
 			});
 		}
 
@@ -2932,7 +2993,7 @@ app.post("/api/scale/:deploymentId", async (req, res) => {
 		if (!req.session.awsCredentials) {
 			return res.status(401).json({
 				ok: false,
-				error: "No AWS credentials found",
+				error: "No AWS credentials found. Session may have expired or backend restarted. Reconnect credentials.",
 			});
 		}
 
@@ -2954,14 +3015,23 @@ app.post("/api/scale/:deploymentId", async (req, res) => {
 			res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
 		};
 
-		// Update terraform.tfvars
-		let tfvars = fs.readFileSync(path.join(deployDir, "terraform.tfvars"), "utf8");
-		if (instanceType) tfvars += `\ninstance_type = "${instanceType}"`;
-		if (rdsSize) tfvars += `\nrds_instance_type = "${rdsSize}"`;
-		if (minReplicas) tfvars += `\nmin_replicas = ${minReplicas}`;
-		if (maxReplicas) tfvars += `\nmax_replicas = ${maxReplicas}`;
+		const upsertTfvar = (text, key, value) => {
+			const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+			const pattern = new RegExp(`^\\s*${escapedKey}\\s*=.*$`, "m");
+			const line = `${key} = ${value}`;
+			if (pattern.test(text)) return text.replace(pattern, line);
+			return `${text.trimEnd()}\n${line}\n`;
+		};
 
-		fs.writeFileSync(path.join(deployDir, "terraform.tfvars"), tfvars);
+		// Update terraform.tfvars
+		const tfvarsPath = path.join(deployDir, "terraform.tfvars");
+		let tfvars = fs.existsSync(tfvarsPath) ? fs.readFileSync(tfvarsPath, "utf8") : "# Auto-generated by ShopOps\n";
+		if (instanceType) tfvars = upsertTfvar(tfvars, "ec2_instance_type", `"${instanceType}"`);
+		if (rdsSize) tfvars = upsertTfvar(tfvars, "rds_instance_type", `"${rdsSize}"`);
+		if (minReplicas) tfvars = upsertTfvar(tfvars, "min_replicas", `${Number(minReplicas)}`);
+		if (maxReplicas) tfvars = upsertTfvar(tfvars, "max_replicas", `${Number(maxReplicas)}`);
+
+		fs.writeFileSync(tfvarsPath, tfvars);
 
 		const awsEnv = {
 			...process.env,
@@ -2973,6 +3043,13 @@ app.post("/api/scale/:deploymentId", async (req, res) => {
 		sendEvent("progress", { message: "Planning scaling changes..." });
 
 		try {
+			await execAsync("terraform init -backend=false -input=false -no-color", {
+				cwd: deployDir,
+				env: awsEnv,
+				timeout: 120000,
+				maxBuffer: 10 * 1024 * 1024,
+			});
+
 			await execAsync("terraform plan -no-color -out=tfplan", {
 				cwd: deployDir,
 				env: awsEnv,
@@ -2991,7 +3068,7 @@ app.post("/api/scale/:deploymentId", async (req, res) => {
 
 			sendEvent("complete", { message: "Scaling completed successfully" });
 		} catch (err) {
-			sendEvent("error", { message: "Scaling failed: " + err.message.slice(0, 200) });
+			sendEvent("error", { message: "Scaling failed: " + summarizeScaleTerraformError(err).slice(0, 600) });
 		}
 
 		res.end();

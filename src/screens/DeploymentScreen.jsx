@@ -174,6 +174,8 @@ export default function DeploymentScreen({ architecture, businessConfig, onCompl
 	const [deploymentComplete, setDeploymentComplete] = useState(false);
 	const [error, setError] = useState(null);
 	const logsEndRef = useRef(null);
+	const appPublicIp = outputs?.app_public_ip?.value;
+	const appUrl = appPublicIp ? `http://${appPublicIp}:3000` : null;
 
 	useEffect(() => {
 		logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -293,6 +295,19 @@ export default function DeploymentScreen({ architecture, businessConfig, onCompl
 			{deploymentComplete && outputs && (
 				<div>
 					<h3 style={{ margin: "16px 0 8px 0", fontSize: "14px", fontWeight: "600" }}>Deployment Outputs</h3>
+					{appUrl && (
+						<div
+							style={{
+								padding: "12px",
+								backgroundColor: "#E8F5E9",
+								border: "1px solid #A5D6A7",
+								borderRadius: "8px",
+								marginBottom: "12px",
+								fontSize: "13px",
+							}}>
+							<strong>App URL:</strong> {appUrl}
+						</div>
+					)}
 					<OutputsContainer>
 						{Object.entries(outputs).map(([key, value]) => (
 							<OutputItem key={key}>

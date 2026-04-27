@@ -1,0 +1,44 @@
+{
+  "deploymentId": "deploy_1777302386495_e071",
+  "createdAt": "2026-04-27T15:08:31.164Z",
+  "status": "active",
+  "architecture": {
+    "tier": "Standard",
+    "components": {}
+  },
+  "businessConfig": {
+    "appName": "store",
+    "traffic": "tiny",
+    "dataNeeds": "yes"
+  },
+  "outputs": {
+    "app_instance_id": {
+      "sensitive": false,
+      "type": "string",
+      "value": "i-0c2cce1be2e55bcf3"
+    },
+    "public_subnet_ids": {
+      "sensitive": false,
+      "type": [
+        "tuple",
+        [
+          "string",
+          "string"
+        ]
+      ],
+      "value": [
+        "subnet-05c3af758b0a65ed0",
+        "subnet-0e9848a38b710da07"
+      ]
+    },
+    "vpc_id": {
+      "sensitive": false,
+      "type": "string",
+      "value": "vpc-04312880103fb49f8"
+    }
+  },
+  "credentials": {
+    "region": "ap-south-1"
+  },
+  "terraformDir": "C:\\Users\\mmuaz\\Desktop\\Projects\\shopops-infra\\backend\\deployments\\deploy_1777302386495_e071"
+}

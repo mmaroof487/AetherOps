@@ -81,6 +81,70 @@ function nextPoint(previous) {
 	};
 }
 
+function useCpuMetrics(deploymentId, authExpired, onAuthExpired) {
+	const [cpuMetrics, setCpuMetrics] = useState([]);
+	const [loadingMetrics, setLoadingMetrics] = useState(true);
+	const [usingFallback, setUsingFallback] = useState(false);
+	const [metricsError, setMetricsError] = useState(null);
+
+	useEffect(() => {
+		if (!deploymentId || authExpired) {
+			setLoadingMetrics(false);
+			return;
+		}
+
+		let cancelled = false;
+
+		const fetchMetrics = async () => {
+			if (!cancelled && cpuMetrics.length === 0) setLoadingMetrics(true);
+
+			try {
+				const response = await fetch(`/api/metrics/${deploymentId}`, { credentials: "include" });
+				if (response.status === 401) {
+					onAuthExpired();
+					if (!cancelled) {
+						setMetricsError("AWS session expired. Reconnect credentials.");
+						setLoadingMetrics(false);
+					}
+					return;
+				}
+
+				const payload = await response.json();
+				const points = Array.isArray(payload) ? payload : [];
+				const mapped = points
+					.filter((p) => p?.time)
+					.slice(-20)
+					.map((p) => ({
+						time: new Date(p.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+						value: Number(p.value || 0),
+					}));
+
+				if (!cancelled) {
+					setCpuMetrics(mapped);
+					setUsingFallback(response.headers.get("x-metrics-fallback") === "true");
+					setMetricsError(response.headers.get("x-metrics-error") || null);
+					setLoadingMetrics(false);
+				}
+			} catch (err) {
+				if (!cancelled) {
+					setMetricsError(err.message || "Failed to fetch metrics");
+					setLoadingMetrics(false);
+				}
+			}
+		};
+
+		fetchMetrics();
+		const interval = setInterval(fetchMetrics, 60000);
+
+		return () => {
+			cancelled = true;
+			clearInterval(interval);
+		};
+	}, [deploymentId, authExpired]);
+
+	return { cpuMetrics, loadingMetrics, usingFallback, metricsError };
+}
+
 const Container = styled("div", {
 	display: "flex",
 	flexDirection: "column",
@@ -260,7 +324,6 @@ const OutputValue = styled("div", {
 export default function EnhancedDashboardScreen({ deploymentId: activeDeploymentId = null }) {
 	const [deployments, setDeployments] = useState([]);
 	const [selectedDeployment, setSelectedDeployment] = useState(null);
-	const [metrics, setMetrics] = useState([]);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState(null);
 	const [authExpired, setAuthExpired] = useState(false);
@@ -274,15 +337,20 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 		maxReplicas: "",
 	});
 
+	const { cpuMetrics, loadingMetrics, usingFallback, metricsError } = useCpuMetrics(selectedDeployment?.deploymentId, authExpired, () => {
+		setAuthExpired(true);
+		setError("AWS session expired. Please reconnect your AWS credentials and retry.");
+	});
+
 	const displayedSeries = simSeries.map((point, index) => {
-		const fromReal = metrics[index];
+		const fromReal = cpuMetrics[index];
 		return fromReal
 			? {
 					...point,
 					time: fromReal.time || point.time,
-					cpu: Number((fromReal.cpu ?? point.cpu).toFixed(1)),
-					max: Number((fromReal.max ?? point.max).toFixed(1)),
-			  }
+					cpu: Number((fromReal.value ?? point.cpu).toFixed(1)),
+					max: Number(clamp((fromReal.value ?? point.cpu) + 6, fromReal.value ?? point.cpu, 100).toFixed(1)),
+				}
 			: point;
 	});
 
@@ -340,47 +408,6 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 		const interval = setInterval(fetchDeployments, 30000); // Refresh every 30 seconds
 		return () => clearInterval(interval);
 	}, [activeDeploymentId]);
-
-	// Fetch metrics for selected deployment
-	useEffect(() => {
-		if (!selectedDeployment?.deploymentId) return;
-		if (authExpired) return;
-
-		const fetchMetrics = async () => {
-			try {
-				const response = await fetch(`/api/metrics/${selectedDeployment.deploymentId}`, { credentials: "include" });
-				if (response.status === 401) {
-					setAuthExpired(true);
-					setError("AWS session expired. Please reconnect your AWS credentials and retry.");
-					return;
-				}
-
-				const data = await response.json();
-				if (!response.ok) {
-					console.error("Metrics error:", data?.error || `HTTP ${response.status}`);
-					return;
-				}
-				if (data.ok) {
-					// Convert AWS metrics to chart format
-					const chartData = (data.metrics || [])
-						.sort((a, b) => new Date(a.Timestamp) - new Date(b.Timestamp))
-						.slice(-20) // Last 20 datapoints
-						.map((m) => ({
-							time: new Date(m.Timestamp).toLocaleTimeString(),
-							cpu: m.Average || 0,
-							max: m.Maximum || 0,
-						}));
-					setMetrics(chartData);
-				}
-			} catch (err) {
-				console.error("Metrics error:", err);
-			}
-		};
-
-		fetchMetrics();
-		const interval = setInterval(fetchMetrics, 60000); // Refresh every 60 seconds
-		return () => clearInterval(interval);
-	}, [selectedDeployment?.deploymentId, authExpired]);
 
 	const handleScale = async () => {
 		if (!selectedDeployment?.deploymentId) {
@@ -599,6 +626,9 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 				<>
 					<Section>
 						<SectionTitle>Performance Metrics</SectionTitle>
+						{loadingMetrics && <div style={{ fontSize: "12px", color: "#666" }}>Loading metrics...</div>}
+						{usingFallback && <div style={{ fontSize: "12px", color: "#B26A00" }}>Showing fallback metrics while CloudWatch data is unavailable.</div>}
+						{metricsError && <div style={{ fontSize: "12px", color: "#C62828" }}>{metricsError}</div>}
 						<ChartGrid>
 							<ChartContainer>
 								<div style={{ fontSize: "13px", fontWeight: 700, color: "#21405E", marginBottom: "8px" }}>CPU Utilization</div>
@@ -773,12 +803,7 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 									marginTop: "8px",
 									fontSize: "12px",
 									fontWeight: 600,
-									color:
-										scaleStatus.type === "error"
-											? "#C62828"
-											: scaleStatus.type === "success"
-												? "#2E7D32"
-												: "#1565C0",
+									color: scaleStatus.type === "error" ? "#C62828" : scaleStatus.type === "success" ? "#2E7D32" : "#1565C0",
 								}}>
 								{scaleStatus.message}
 							</div>

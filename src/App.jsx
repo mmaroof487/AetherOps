@@ -2490,6 +2490,7 @@ export default function App() {
 	const [bizType, setBizType] = useState(() => localStorage.getItem("so_biz") || null);
 	const [traffic, setTraffic] = useState(() => localStorage.getItem("so_traffic") || null);
 	const [dataNeeds, setDataNeeds] = useState(() => localStorage.getItem("so_data") || null);
+	const [repoUrl, setRepoUrl] = useState(() => localStorage.getItem("so_repo_url") || "");
 	const [darkMode, setDarkMode] = useState(() => localStorage.getItem("so_dark") === "1");
 
 	// Check if a step is accessible
@@ -2531,6 +2532,10 @@ export default function App() {
 		setDataNeeds(v);
 		localStorage.setItem("so_data", v || "");
 	};
+	const setRepoP = (v) => {
+		setRepoUrl(v || "");
+		localStorage.setItem("so_repo_url", v || "");
+	};
 
 	useEffect(() => {
 		const handler = (e) => {
@@ -2546,7 +2551,8 @@ export default function App() {
 		setBizType(null);
 		setTraffic(null);
 		setDataNeeds(null);
-		["so_step", "so_biz", "so_traffic", "so_data"].forEach((k) => localStorage.removeItem(k));
+		setRepoUrl("");
+		["so_step", "so_biz", "so_traffic", "so_data", "so_repo_url"].forEach((k) => localStorage.removeItem(k));
 	};
 
 	return (
@@ -2595,11 +2601,11 @@ export default function App() {
 				{step === 3 && <DataNeeds value={dataNeeds} onChange={setDataP} onNext={() => setStepP(4)} onBack={() => setStepP(2)} />}
 				{step === 4 && <CostPreview traffic={traffic} dataNeeds={dataNeeds} onNext={() => setStepP(5)} onBack={() => setStepP(3)} />}
 				{step === 5 && <InfraDiagram dataNeeds={dataNeeds} onNext={() => setStepP(6)} onBack={() => setStepP(4)} />}
-				{step === 6 && <CredentialsScreen onCredentialsSet={() => setStepP(7)} onSkip={() => setStepP(7)} />}
+				{step === 6 && <CredentialsScreen repoUrl={repoUrl} onRepoUrlChange={setRepoP} onCredentialsSet={() => setStepP(7)} onSkip={() => setStepP(7)} />}
 				{step === 7 && (
 					<DeploymentScreen
 						architecture={{ tier: "Standard", components: {} }}
-						businessConfig={{ appName: bizType || "shopops", traffic, dataNeeds }}
+						businessConfig={{ appName: bizType || "shopops", traffic, dataNeeds, repoUrl }}
 						onComplete={(depId, outputs) => setStepP(8)}
 						onCancel={() => setStepP(6)}
 					/>

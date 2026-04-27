@@ -158,7 +158,7 @@ const AWS_REGIONS = [
 	{ value: "eu-west-1", label: "Europe (Ireland)" },
 ];
 
-export default function CredentialsScreen({ onCredentialsSet, onSkip }) {
+export default function CredentialsScreen({ repoUrl = "", onRepoUrlChange, onCredentialsSet, onSkip }) {
 	const [formData, setFormData] = useState({
 		accessKeyId: "",
 		secretAccessKey: "",
@@ -221,6 +221,19 @@ export default function CredentialsScreen({ onCredentialsSet, onSkip }) {
 
 			<Form onSubmit={handleSubmit}>
 				<InfoBox>💡 Your credentials are stored locally in your browser session (24-hour expiration) and used only to deploy infrastructure to your AWS account.</InfoBox>
+
+				<FormGroup>
+					<Label htmlFor="repoUrl">GitHub Repository URL</Label>
+					<Input
+						id="repoUrl"
+						name="repoUrl"
+						type="url"
+						placeholder="https://github.com/user/app"
+						value={repoUrl}
+						onChange={(e) => onRepoUrlChange && onRepoUrlChange(e.target.value)}
+						disabled={loading}
+					/>
+				</FormGroup>
 
 				<FormGroup>
 					<Label htmlFor="accessKeyId">AWS Access Key ID</Label>

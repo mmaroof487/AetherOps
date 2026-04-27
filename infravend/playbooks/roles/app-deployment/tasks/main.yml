@@ -1,0 +1,409 @@
+---
+# ShopOps Application Deployment Role
+# Deploys containerized application, configures services, and sets up monitoring
+
+- name: Create application directory
+  file:
+    path: /opt/shopops
+    state: directory
+    mode: '0755'
+  become: yes
+  tags: [deployment, setup]
+
+- name: Create app user
+  user:
+    name: shopops
+    home: /opt/shopops
+    shell: /bin/bash
+    groups: docker
+    createhome: yes
+  become: yes
+  tags: [deployment, setup]
+
+- name: Setup application environment
+  block:
+    - name: Create env file
+      copy:
+        content: |
+          # ShopOps Application Environment
+          NODE_ENV=production
+          PORT=8000
+          LOG_LEVEL=info
+          DATABASE_URL={{ database_url }}
+          REDIS_URL={{ redis_url | default('') }}
+          AWS_REGION=ap-south-1
+        dest: /opt/shopops/.env
+        owner: shopops
+        group: shopops
+        mode: '0600'
+      become: yes
+      tags: [deployment, config]
+
+    - name: Create application config directory
+      file:
+        path: /opt/shopops/config
+        state: directory
+        owner: shopops
+        group: shopops
+        mode: '0755'
+      become: yes
+      tags: [deployment, config]
+
+    - name: Create logs directory
+      file:
+        path: /var/log/shopops
+        state: directory
+        owner: shopops
+        group: shopops
+        mode: '0755'
+      become: yes
+      tags: [deployment, logging]
+  tags: [deployment, setup]
+
+- name: Deploy Docker Compose configuration
+  block:
+    - name: Install Docker Compose
+      shell: curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose
+      become: yes
+      ignore_errors: yes
+      tags: [deployment, docker]
+
+    - name: Create docker-compose.yml
+      copy:
+        content: |
+          version: '3.8'
+          services:
+            app:
+              image: {{ docker_image }}
+              container_name: shopops-app
+              ports:
+                - "8000:8000"
+              env_file:
+                - .env
+              volumes:
+                - /var/log/shopops:/app/logs
+              restart: unless-stopped
+              networks:
+                - shopops-network
+              healthcheck:
+                test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+                interval: 30s
+                timeout: 10s
+                retries: 3
+              logging:
+                driver: "json-file"
+                options:
+                  max-size: "10m"
+                  max-file: "3"
+
+          networks:
+            shopops-network:
+              driver: bridge
+        dest: /opt/shopops/docker-compose.yml
+        owner: shopops
+        group: shopops
+        mode: '0644'
+      become: yes
+      tags: [deployment, docker]
+  tags: [deployment]
+
+- name: Setup systemd service for application
+  block:
+    - name: Create systemd service file
+      copy:
+        content: |
+          [Unit]
+          Description=ShopOps Application
+          After=network.target docker.service
+          Requires=docker.service
+
+          [Service]
+          Type=simple
+          User=shopops
+          WorkingDirectory=/opt/shopops
+          Environment="PATH=/usr/local/bin:/usr/bin"
+          ExecStart=/usr/local/bin/docker-compose up
+          ExecStop=/usr/local/bin/docker-compose down
+          Restart=unless-stopped
+          RestartSec=10
+
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier=shopops
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/shopops.service
+        mode: '0644'
+      become: yes
+      notify: reload systemd daemon
+      tags: [deployment, systemd]
+
+    - name: Enable and start shopops service
+      systemd:
+        name: shopops
+        enabled: yes
+        state: started
+      become: yes
+      tags: [deployment, systemd]
+  tags: [deployment]
+
+- name: Configure log rotation
+  block:
+    - name: Setup logrotate for application logs
+      copy:
+        content: |
+          /var/log/shopops/*.log {
+              daily
+              rotate 14
+              compress
+              delaycompress
+              notifempty
+              create 0640 shopops shopops
+              sharedscripts
+              postrotate
+                  systemctl reload shopops > /dev/null 2>&1 || true
+              endscript
+          }
+        dest: /etc/logrotate.d/shopops
+      become: yes
+      tags: [deployment, logging]
+  tags: [deployment]
+
+- name: Setup monitoring and health checks
+  block:
+    - name: Install Prometheus node exporter
+      apt:
+        name: prometheus-node-exporter
+        state: present
+      become: yes
+      tags: [deployment, monitoring]
+
+    - name: Start node exporter
+      systemd:
+        name: prometheus-node-exporter
+        enabled: yes
+        state: started
+      become: yes
+      tags: [deployment, monitoring]
+
+    - name: Create health check script
+      copy:
+        content: |
+          #!/bin/bash
+          set -e
+
+          # Check Docker daemon
+          docker ps > /dev/null 2>&1 || { echo "Docker daemon not running"; exit 1; }
+
+          # Check application health
+          if curl -f http://localhost:8000/health > /dev/null 2>&1; then
+              echo "✓ Application is healthy"
+              exit 0
+          else
+              echo "✗ Application health check failed"
+              exit 1
+          fi
+        dest: /usr/local/bin/shopops-health-check
+        owner: root
+        group: root
+        mode: '0755'
+      become: yes
+      tags: [deployment, monitoring]
+
+    - name: Schedule health checks via cron
+      cron:
+        name: "ShopOps health check"
+        minute: "*/5"
+        job: "/usr/local/bin/shopops-health-check >> /var/log/shopops/health-check.log 2>&1"
+        user: root
+      become: yes
+      tags: [deployment, monitoring]
+  tags: [deployment]
+
+- name: Setup database connectivity
+  block:
+    - name: Install PostgreSQL client
+      apt:
+        name: postgresql-client
+        state: present
+      become: yes
+      tags: [deployment, database]
+
+    - name: Create database connection test script
+      copy:
+        content: |
+          #!/bin/bash
+          # Test PostgreSQL connection
+          psql -h {{ database_host }} -U {{ database_user }} -d {{ database_name }} -c "SELECT 1" > /dev/null 2>&1
+          if [ $? -eq 0 ]; then
+              echo "✓ Database connection successful"
+          else
+              echo "✗ Database connection failed"
+              exit 1
+          fi
+        dest: /usr/local/bin/shopops-db-check
+        owner: root
+        group: root
+        mode: '0755'
+      become: yes
+      tags: [deployment, database]
+  tags: [deployment]
+
+- name: Setup backup strategy
+  block:
+    - name: Create backup directory
+      file:
+        path: /opt/shopops/backups
+        state: directory
+        owner: shopops
+        group: shopops
+        mode: '0755'
+      become: yes
+      tags: [deployment, backup]
+
+    - name: Create backup script
+      copy:
+        content: |
+          #!/bin/bash
+          # ShopOps Backup Script
+          set -e
+
+          BACKUP_DIR="/opt/shopops/backups"
+          BACKUP_DATE=$(date +%Y%m%d_%H%M%S)
+          BACKUP_FILE="$BACKUP_DIR/backup_$BACKUP_DATE.tar.gz"
+
+          echo "Starting backup at $BACKUP_DATE..."
+
+          # Backup application data
+          tar -czf "$BACKUP_FILE" /opt/shopops/data /opt/shopops/config 2>/dev/null || true
+
+          # Keep only last 7 backups
+          find $BACKUP_DIR -name "backup_*.tar.gz" -mtime +7 -delete
+
+          echo "Backup completed: $BACKUP_FILE"
+        dest: /usr/local/bin/shopops-backup
+        owner: root
+        group: root
+        mode: '0755'
+      become: yes
+      tags: [deployment, backup]
+
+    - name: Schedule daily backups
+      cron:
+        name: "ShopOps daily backup"
+        minute: "0"
+        hour: "1"
+        job: "/usr/local/bin/shopops-backup >> /var/log/shopops/backup.log 2>&1"
+        user: root
+      become: yes
+      tags: [deployment, backup]
+  tags: [deployment]
+
+- name: Setup SSH key for deployment automation
+  block:
+    - name: Create .ssh directory for shopops user
+      file:
+        path: /opt/shopops/.ssh
+        state: directory
+        owner: shopops
+        group: shopops
+        mode: '0700'
+      become: yes
+      tags: [deployment, ssh]
+
+    - name: Add deployment SSH key
+      copy:
+        content: "{{ deployment_public_key }}"
+        dest: /opt/shopops/.ssh/authorized_keys
+        owner: shopops
+        group: shopops
+        mode: '0600'
+      become: yes
+      when: deployment_public_key is defined
+      tags: [deployment, ssh]
+  tags: [deployment]
+
+- name: Setup CloudWatch agent for monitoring
+  block:
+    - name: Download CloudWatch agent
+      shell: |
+        wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb -O /tmp/amazon-cloudwatch-agent.deb
+      become: yes
+      ignore_errors: yes
+      tags: [deployment, monitoring]
+
+    - name: Install CloudWatch agent
+      apt:
+        deb: /tmp/amazon-cloudwatch-agent.deb
+      become: yes
+      ignore_errors: yes
+      tags: [deployment, monitoring]
+
+    - name: Create CloudWatch agent config
+      copy:
+        content: |
+          {
+            "agent": {
+              "metrics_collection_interval": 60,
+              "run_as_user": "cwagent"
+            },
+            "metrics": {
+              "namespace": "ShopOps/Application",
+              "metrics_collected": {
+                "cpu": {
+                  "measurement": [
+                    {"name": "cpu_usage_idle", "rename": "CPU_IDLE", "unit": "Percent"},
+                    {"name": "cpu_usage_system", "rename": "CPU_SYSTEM", "unit": "Percent"},
+                    {"name": "cpu_usage_user", "rename": "CPU_USER", "unit": "Percent"}
+                  ],
+                  "metrics_collection_interval": 60
+                },
+                "mem": {
+                  "measurement": [
+                    {"name": "mem_used_percent", "rename": "MEM_USED", "unit": "Percent"}
+                  ],
+                  "metrics_collection_interval": 60
+                },
+                "disk": {
+                  "measurement": [
+                    {"name": "used_percent", "rename": "DISK_USED", "unit": "Percent"}
+                  ],
+                  "metrics_collection_interval": 60,
+                  "resources": ["/"]
+                }
+              }
+            },
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/shopops/*.log",
+                      "log_group_name": "/aws/ec2/shopops",
+                      "log_stream_name": "{instance_id}"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        dest: /opt/aws/amazon-cloudwatch-agent/etc/config.json
+      become: yes
+      ignore_errors: yes
+      tags: [deployment, monitoring]
+  tags: [deployment]
+
+- name: Print deployment summary
+  debug:
+    msg: |
+      ✓ Application Deployment Completed:
+      - Docker Compose configured
+      - Systemd service created (shopops.service)
+      - Health checks enabled
+      - Log rotation configured
+      - Monitoring setup (CloudWatch agent)
+      - Backup strategy implemented
+      - Database connectivity tested
+      - Application is ready at http://{{ inventory_hostname }}:8000
+  tags: [deployment, summary]

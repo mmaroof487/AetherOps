@@ -1,0 +1,22 @@
+# Docker ignore patterns
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+.env.local
+.DS_Store
+*.md
+.vscode
+.idea
+dist
+build
+.next
+out
+coverage
+.nyc_output
+backend/temp
+backend/deployments
+.terraform
+*.tfstate
+*.tfstate.*

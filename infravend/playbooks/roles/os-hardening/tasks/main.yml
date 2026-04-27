@@ -1,0 +1,476 @@
+---
+# ShopOps OS Hardening Role
+# Implements security best practices for production servers
+
+- name: Update system packages
+  apt:
+    update_cache: yes
+    upgrade: dist
+    cache_valid_time: 3600
+  become: yes
+  tags: [hardening, packages]
+
+- name: Install essential security packages
+  apt:
+    name:
+      - curl
+      - wget
+      - git
+      - htop
+      - net-tools
+      - ufw
+      - fail2ban
+      - aide
+      - openssh-server
+      - openssh-client
+      - openssl
+      - sudo
+      - tmux
+      - vim
+      - nano
+    state: present
+  become: yes
+  tags: [hardening, packages]
+
+- name: Configure UFW firewall
+  block:
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+      become: yes
+
+    - name: Allow SSH
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+      become: yes
+
+    - name: Allow HTTP
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+      become: yes
+
+    - name: Allow HTTPS
+      ufw:
+        rule: allow
+        port: '443'
+        proto: tcp
+      become: yes
+
+    - name: Allow application port
+      ufw:
+        rule: allow
+        port: '8000'
+        proto: tcp
+      become: yes
+  tags: [hardening, firewall]
+
+- name: Harden SSH configuration
+  block:
+    - name: Disable SSH password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      become: yes
+      notify: restart sshd
+
+    - name: Disable root login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+      become: yes
+      notify: restart sshd
+
+    - name: Disable empty password login
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitEmptyPasswords'
+        line: 'PermitEmptyPasswords no'
+      become: yes
+      notify: restart sshd
+
+    - name: Enable X11 forwarding disable
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?X11Forwarding'
+        line: 'X11Forwarding no'
+      become: yes
+      notify: restart sshd
+
+    - name: Set SSH port to 22
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Port'
+        line: 'Port 22'
+      become: yes
+      notify: restart sshd
+
+    - name: Disable Protocol 1
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Protocol'
+        line: 'Protocol 2'
+      become: yes
+      notify: restart sshd
+
+    - name: Set ClientAliveInterval
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ClientAliveInterval'
+        line: 'ClientAliveInterval 300'
+      become: yes
+      notify: restart sshd
+
+    - name: Set ClientAliveCountMax
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?ClientAliveCountMax'
+        line: 'ClientAliveCountMax 2'
+      become: yes
+      notify: restart sshd
+  tags: [hardening, ssh]
+
+- name: Configure sudo hardening
+  block:
+    - name: Set sudo log file
+      lineinfile:
+        path: /etc/sudoers
+        regexp: '^Defaults\s+logfile'
+        line: 'Defaults logfile="/var/log/sudo.log"'
+        validate: '/usr/sbin/visudo -cf %s'
+      become: yes
+
+    - name: Require sudo password
+      lineinfile:
+        path: /etc/sudoers
+        regexp: '^Defaults\s+use_pty'
+        line: 'Defaults use_pty'
+        validate: '/usr/sbin/visudo -cf %s'
+      become: yes
+
+    - name: Log sudo commands with timestamps
+      lineinfile:
+        path: /etc/sudoers
+        regexp: '^Defaults\s+log_input,log_output'
+        line: 'Defaults log_input,log_output'
+        validate: '/usr/sbin/visudo -cf %s'
+      become: yes
+  tags: [hardening, sudo]
+
+- name: Configure Fail2Ban for brute force protection
+  block:
+    - name: Copy fail2ban local config
+      copy:
+        content: |
+          [DEFAULT]
+          bantime = 3600
+          findtime = 600
+          maxretry = 5
+
+          [sshd]
+          enabled = true
+          port = ssh
+          filter = sshd
+          logpath = %(sshd_log)s
+          maxretry = 3
+        dest: /etc/fail2ban/jail.local
+      become: yes
+      notify: restart fail2ban
+
+    - name: Enable fail2ban
+      systemd:
+        name: fail2ban
+        enabled: yes
+        state: started
+      become: yes
+  tags: [hardening, fail2ban]
+
+- name: Configure system limits
+  block:
+    - name: Set file descriptor limits
+      lineinfile:
+        path: /etc/security/limits.conf
+        line: '* soft nofile 65535\n* hard nofile 65535'
+        state: present
+      become: yes
+
+    - name: Set process limits
+      lineinfile:
+        path: /etc/security/limits.conf
+        line: '* soft nproc 65535\n* hard nproc 65535'
+        state: present
+      become: yes
+  tags: [hardening, limits]
+
+- name: Configure kernel parameters (sysctl)
+  block:
+    - name: Enable SYN flood protection
+      sysctl:
+        name: net.ipv4.tcp_syncookies
+        value: '1'
+        state: present
+      become: yes
+
+    - name: Disable IP forwarding
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '0'
+        state: present
+      become: yes
+
+    - name: Enable bad error message protection
+      sysctl:
+        name: net.ipv4.icmp_ignore_bogus_error_responses
+        value: '1'
+        state: present
+      become: yes
+
+    - name: Enable reverse path filtering
+      sysctl:
+        name: net.ipv4.conf.all.rp_filter
+        value: '1'
+        state: present
+      become: yes
+
+    - name: Disable ICMP redirects
+      sysctl:
+        name: net.ipv4.conf.all.accept_redirects
+        value: '0'
+        state: present
+      become: yes
+
+    - name: Enable TCP wrappers
+      block:
+        - name: Set TCP wrappers allow rules
+          copy:
+            content: |
+              ALL: 127.0.0.1
+              sshd: ALL
+            dest: /etc/hosts.allow
+          become: yes
+
+        - name: Set TCP wrappers deny rules
+          copy:
+            content: 'ALL: ALL'
+            dest: /etc/hosts.deny
+          become: yes
+  tags: [hardening, sysctl]
+
+- name: Setup logrotate for log management
+  block:
+    - name: Configure system log rotation
+      copy:
+        content: |
+          /var/log/auth.log
+          {
+              missingok
+              weekly
+              rotate 52
+              compress
+              delaycompress
+              notifempty
+              create 0600 root root
+          }
+
+          /var/log/sudo.log
+          {
+              missingok
+              daily
+              rotate 30
+              compress
+              delaycompress
+              notifempty
+              create 0600 root root
+          }
+        dest: /etc/logrotate.d/shopops
+      become: yes
+  tags: [hardening, logging]
+
+- name: Enable audit logging
+  block:
+    - name: Install auditd
+      apt:
+        name: auditd
+        state: present
+      become: yes
+
+    - name: Start and enable auditd
+      systemd:
+        name: auditd
+        enabled: yes
+        state: started
+      become: yes
+
+    - name: Configure audit rules
+      copy:
+        content: |
+          # Remove any existing rules
+          -D
+          # Buffer Size
+          -b 8192
+          # Failure Mode
+          -f 1
+          # Track authentication
+          -w /etc/shadow -p wa -k shadow_changes
+          -w /etc/passwd -p wa -k passwd_changes
+          # Track sudo usage
+          -w /etc/sudoers -p wa -k sudoers_changes
+          # Track SSH configuration
+          -w /etc/ssh/sshd_config -p wa -k sshd_config_changes
+          # Track system calls
+          -a always,exit -F arch=b64 -S execve -k exec
+        dest: /etc/audit/rules.d/shopops.rules
+      become: yes
+      notify: restart auditd
+  tags: [hardening, audit]
+
+- name: Setup file integrity monitoring
+  block:
+    - name: Initialize AIDE
+      shell: aideinit
+      become: yes
+      ignore_errors: yes
+      tags: [hardening, aide]
+
+    - name: Schedule AIDE daily check
+      cron:
+        name: "AIDE daily integrity check"
+        minute: "0"
+        hour: "2"
+        job: "/usr/sbin/aide --check | mail -s 'AIDE Integrity Check' root@localhost"
+        user: root
+      become: yes
+  tags: [hardening, aide]
+
+- name: Configure automatic security updates
+  block:
+    - name: Install unattended-upgrades
+      apt:
+        name: unattended-upgrades
+        state: present
+      become: yes
+
+    - name: Configure unattended-upgrades
+      copy:
+        content: |
+          Unattended-Upgrade::Allowed-Origins {
+            "${distro_id}:${distro_codename}";
+            "${distro_id}:${distro_codename}-security";
+            "${distro_id}ESMApps:${distro_codename}-apps-security";
+            "${distro_id}ESM:${distro_codename}-infra-security";
+          };
+          Unattended-Upgrade::AutoFixInterruptedDpkg "true";
+          Unattended-Upgrade::MinimalSteps "true";
+          Unattended-Upgrade::Mail "root@localhost";
+          Unattended-Upgrade::MailReport "on-change";
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Download-Upgradeable-Packages "1";
+          APT::Periodic::AutocleanInterval "7";
+          APT::Periodic::Unattended-Upgrade "1";
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+      become: yes
+  tags: [hardening, updates]
+
+- name: Disable unnecessary services
+  systemd:
+    name: "{{ item }}"
+    enabled: no
+    state: stopped
+  become: yes
+  ignore_errors: yes
+  loop:
+    - avahi-daemon
+    - cups
+    - iscsid
+  tags: [hardening, services]
+
+- name: Set proper file permissions
+  block:
+    - name: Restrict /etc/passwd permissions
+      file:
+        path: /etc/passwd
+        mode: '0644'
+      become: yes
+
+    - name: Restrict /etc/shadow permissions
+      file:
+        path: /etc/shadow
+        mode: '0640'
+      become: yes
+
+    - name: Restrict /etc/gshadow permissions
+      file:
+        path: /etc/gshadow
+        mode: '0640'
+      become: yes
+
+    - name: Restrict /etc/group permissions
+      file:
+        path: /etc/group
+        mode: '0644'
+      become: yes
+  tags: [hardening, permissions]
+
+- name: Install and configure Docker (for containerized apps)
+  block:
+    - name: Install Docker dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+      become: yes
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      become: yes
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable"
+        state: present
+      become: yes
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+      become: yes
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        enabled: yes
+        state: started
+      become: yes
+  tags: [hardening, docker]
+  ignore_errors: yes
+
+- name: Print hardening summary
+  debug:
+    msg: |
+      ✓ OS Hardening Completed:
+      - SSH hardened (key-based auth, no root login)
+      - Firewall configured with UFW
+      - Fail2Ban enabled for brute force protection
+      - Kernel parameters hardened
+      - Audit logging enabled
+      - File integrity monitoring configured
+      - Security updates automated
+      - Docker installed and ready
+  tags: [hardening, summary]

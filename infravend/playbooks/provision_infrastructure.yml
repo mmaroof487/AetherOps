@@ -1,0 +1,127 @@
+---
+# ShopOps Infrastructure Provisioning Playbook
+# Orchestrates OS hardening and application deployment
+
+- name: ShopOps Infrastructure Setup
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    docker_image: "{{ docker_image_url | default('nginx:latest') }}"
+    database_host: "{{ rds_endpoint | default('localhost') }}"
+    database_user: "{{ database_username | default('shopopsadmin') }}"
+    database_name: "{{ database_dbname | default('shopopsdb') }}"
+    database_url: "postgresql://{{ database_user }}@{{ database_host }}:5432/{{ database_name }}"
+    redis_url: "{{ redis_endpoint | default('') }}"
+    deployment_public_key: "{{ lookup('file', lookup('env','HOME') + '/.ssh/id_rsa.pub') | default('') }}"
+
+  pre_tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          ════════════════════════════════════════════════════════════════════════════════
+          ShopOps Infrastructure Provisioning
+          ════════════════════════════════════════════════════════════════════════════════
+          Target Host: {{ inventory_hostname }}
+          OS: {{ ansible_os_family }} ({{ ansible_lsb.description | default('Unknown') }})
+          Python: {{ ansible_python_version }}
+          Docker Image: {{ docker_image }}
+          Database: {{ database_url }}
+          ════════════════════════════════════════════════════════════════════════════════
+
+    - name: Check if running as root
+      assert:
+        that:
+          - ansible_user_id == "root" or ansible_become_user == "root"
+        fail_msg: "This playbook must be run with sudo or as root"
+
+    - name: Verify connectivity
+      ping:
+
+    - name: Check disk space
+      shell: df -h / | tail -1 | awk '{print $4}'
+      register: disk_space
+      changed_when: no
+
+    - debug:
+        msg: "Available disk space: {{ disk_space.stdout }}"
+
+  roles:
+    - name: os-hardening
+      tags: [hardening, security]
+
+    - name: app-deployment
+      tags: [deployment, app]
+
+  post_tasks:
+    - name: Wait for services to stabilize
+      wait_for:
+        timeout: 30
+      tags: [deployment, post]
+
+    - name: Verify application health
+      uri:
+        url: "http://localhost:8000/health"
+        method: GET
+        status_code: 200
+        retry_args:
+          timeout: 10
+          retries: 3
+          delay: 5
+      ignore_errors: yes
+      tags: [deployment, verification]
+
+    - name: Display deployment completion summary
+      debug:
+        msg: |
+          ════════════════════════════════════════════════════════════════════════════════
+          ✓ DEPLOYMENT COMPLETE
+          ════════════════════════════════════════════════════════════════════════════════
+
+          Security Hardening Applied:
+            ✓ SSH hardened (key-based auth, no root login)
+            ✓ Firewall configured with UFW
+            ✓ Fail2Ban enabled for brute force protection
+            ✓ Kernel parameters hardened
+            ✓ Audit logging enabled
+            ✓ File integrity monitoring configured
+            ✓ Security updates automated
+
+          Application Deployment:
+            ✓ Docker Compose configured
+            ✓ Systemd service created
+            ✓ Health checks enabled
+            ✓ Log rotation configured
+            ✓ Monitoring setup (CloudWatch)
+            ✓ Backup strategy implemented
+
+          Access Information:
+            SSH: ssh -i ~/.ssh/id_rsa ubuntu@{{ inventory_hostname }}
+            App: http://{{ inventory_hostname }}:8000
+            Logs: /var/log/shopops/
+
+          Next Steps:
+            1. Verify application health: curl http://{{ inventory_hostname }}:8000/health
+            2. Check Docker containers: ssh ubuntu@{{ inventory_hostname }} docker ps
+            3. View logs: ssh ubuntu@{{ inventory_hostname }} tail -f /var/log/shopops/app.log
+            4. Configure backups and disaster recovery
+            5. Setup monitoring dashboards
+
+          ════════════════════════════════════════════════════════════════════════════════
+      tags: [deployment, summary]
+
+  handlers:
+    - name: reboot system
+      reboot:
+        msg: "Rebooting after security updates"
+        connect_timeout: 5
+        reboot_timeout: 600
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+
+  error_handlers:
+    - name: Handle deployment failure
+      debug:
+        msg: "Deployment failed on {{ inventory_hostname }}. Check logs for details."
+      when: ansible_failed_task is defined

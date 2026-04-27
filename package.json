@@ -1,0 +1,35 @@
+{
+  "name": "shopops-infra",
+  "version": "1.0.0",
+  "description": "ShopOps Infra — Guided Cloud Deployment & DevOps Learning Platform",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "docker:dev": "docker-compose up -d",
+    "docker:build": "docker-compose build",
+    "docker:prod": "docker-compose -f docker-compose.prod.yml up -d",
+    "docker:down": "docker-compose down",
+    "docker:down:prod": "docker-compose -f docker-compose.prod.yml down",
+    "docker:logs": "docker-compose logs -f",
+    "docker:logs:backend": "docker-compose logs -f backend",
+    "docker:logs:frontend": "docker-compose logs -f frontend",
+    "docker:ps": "docker-compose ps",
+    "docker:clean": "docker system prune -f",
+    "docker:rebuild": "docker-compose down && docker-compose build --no-cache && docker-compose up -d",
+    "docker:test": "docker-compose exec backend npm test"
+  },
+  "dependencies": {
+    "@stitches/react": "^1.2.8",
+    "lucide-react": "^1.8.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^7.13.1",
+    "recharts": "^3.8.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.0",
+    "vite": "^5.0.0"
+  }
+}

@@ -185,7 +185,7 @@ export default function DeploymentScreen({ architecture, businessConfig, onCompl
 
 	useEffect(() => {
 		if (hasDeployed.current) return;
-		
+
 		if (!architecture) {
 			setError("No architecture provided");
 			return;

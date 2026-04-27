@@ -224,15 +224,7 @@ export default function CredentialsScreen({ repoUrl = "", onRepoUrlChange, onCre
 
 				<FormGroup>
 					<Label htmlFor="repoUrl">GitHub Repository URL</Label>
-					<Input
-						id="repoUrl"
-						name="repoUrl"
-						type="url"
-						placeholder="https://github.com/user/app"
-						value={repoUrl}
-						onChange={(e) => onRepoUrlChange && onRepoUrlChange(e.target.value)}
-						disabled={loading}
-					/>
+					<Input id="repoUrl" name="repoUrl" type="url" placeholder="https://github.com/user/app" value={repoUrl} onChange={(e) => onRepoUrlChange && onRepoUrlChange(e.target.value)} disabled={loading} />
 				</FormGroup>
 
 				<FormGroup>

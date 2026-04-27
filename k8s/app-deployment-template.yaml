@@ -1,0 +1,135 @@
+---
+# app-deployment-template.yaml — Generated K8s Deployment template
+# This file is a reference template. The AI generates customized versions via /api/k8s
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopops-config
+  namespace: default
+  labels:
+    app: shopops-app
+data:
+  APP_PORT: "8000"
+  APP_ENV: "production"
+  DB_HOST: "shopops-db-service"
+  DB_PORT: "5432"
+  DB_NAME: "shopops"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: shopops-secrets
+  namespace: default
+  labels:
+    app: shopops-app
+type: Opaque
+data:
+  # Base64-encoded values (replace with real secrets)
+  DB_PASSWORD: c2hvcG9wc19wYXNz    # shopops_pass
+  API_KEY: c2hvcG9wc19hcGlfa2V5    # shopops_api_key
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shopops-app
+  namespace: default
+  labels:
+    app: shopops-app
+    version: "1.0"
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: shopops-app
+  template:
+    metadata:
+      labels:
+        app: shopops-app
+    spec:
+      containers:
+        - name: shopops-app
+          image: shopops-app:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: shopops-config
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shopops-secrets
+                  key: DB_PASSWORD
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: shopops-secrets
+                  key: API_KEY
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shopops-app
+  namespace: default
+  labels:
+    app: shopops-app
+spec:
+  selector:
+    app: shopops-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+  type: ClusterIP
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: shopops-app-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: shopops-app
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

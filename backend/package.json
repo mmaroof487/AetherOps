@@ -6,12 +6,23 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "echo 'Tests not yet configured' && exit 0",
+    "lint": "echo 'Linting not yet configured' && exit 0",
+    "docker:build": "docker build -f Dockerfile.backend -t shopops-backend .",
+    "docker:dev": "docker-compose up -d backend",
+    "docker:logs": "docker-compose logs -f backend"
   },
   "dependencies": {
     "archiver": "^7.0.1",
     "autocannon": "^8.0.0",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/client-cloudwatch": "^3.600.0",
+    "@aws-sdk/credential-providers": "^3.600.0",
     "cors": "^2.8.6",
-    "express": "^4.22.1"
+    "dotenv": "^17.4.2",
+    "express": "^4.22.1",
+    "express-session": "^1.19.0",
+    "socket.io": "^4.8.3"
   }
 }

@@ -1,0 +1,76 @@
+[
+  {
+    "name": "shopops-backend",
+    "image": "BACKEND_IMAGE_PLACEHOLDER",
+    "portMappings": [
+      {
+        "containerPort": 3001,
+        "hostPort": 3001,
+        "protocol": "tcp"
+      }
+    ],
+    "environment": [
+      {
+        "name": "NODE_ENV",
+        "value": "production"
+      },
+      {
+        "name": "OLLAMA_HOST",
+        "value": "http://ollama:11434"
+      }
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/ecs/shopops-backend",
+        "awslogs-region": "ap-south-1",
+        "awslogs-stream-prefix": "ecs"
+      }
+    },
+    "healthCheck": {
+      "command": ["CMD-SHELL", "curl -f http://localhost:3001/api/health || exit 1"],
+      "interval": 30,
+      "timeout": 10,
+      "retries": 3,
+      "startPeriod": 60
+    },
+    "memory": 2048,
+    "cpu": 1024,
+    "essential": true
+  },
+  {
+    "name": "shopops-frontend",
+    "image": "FRONTEND_IMAGE_PLACEHOLDER",
+    "portMappings": [
+      {
+        "containerPort": 5175,
+        "hostPort": 5175,
+        "protocol": "tcp"
+      }
+    ],
+    "environment": [
+      {
+        "name": "REACT_APP_API_URL",
+        "value": "/api"
+      }
+    ],
+    "logConfiguration": {
+      "logDriver": "awslogs",
+      "options": {
+        "awslogs-group": "/ecs/shopops-frontend",
+        "awslogs-region": "ap-south-1",
+        "awslogs-stream-prefix": "ecs"
+      }
+    },
+    "healthCheck": {
+      "command": ["CMD-SHELL", "wget -q --spider http://localhost:5175/ || exit 1"],
+      "interval": 30,
+      "timeout": 10,
+      "retries": 3,
+      "startPeriod": 60
+    },
+    "memory": 1024,
+    "cpu": 512,
+    "essential": true
+  }
+]

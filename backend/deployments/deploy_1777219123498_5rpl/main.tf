@@ -1,0 +1,17 @@
+provider "aws" {
+  region = var.region_name // Mumbai (ap-south-1) in us-east-2 and ap-northeast -> asia, etc... depends on your requirement or default value can be set accordingly with the Terraform AWS provider's documentation to choose a specific profile
+}
+variable "vpc_name" {} // provide unique name for vpc here 
+variable "subnet_cidr" { type = list(string), default = ["10.0.1.0/24", "10.0.2.0/26"] }//provide cidrs in subnets you want, one public and private SubNet for each Availability Zone
+variable "security_group" { type=list(string) , default = ["default","my-app*"]} // provide list of security groups here 
+variable "db_name" {}//provide db name Here. This will be used to create RDS instance and DB passwords, user names etc...    
+variaible "backup_retention" { type=number , default = 7 }    // Default backup retention is set as 5 days (in Days) in AWS config  
+variable "aws_access_key" {}//provide aws access key here for IAM creation. This should be a long string of alphanumeric characters separated by spaces or dashes, and can't start with HTTP referer unless it is served over https (default).  Example: EHVzcGxhZGlfYWNjb3VudDowODR9
+variable "aws_secret_key" {} //provide aws secret key here for IAM creation. The same as AWS Access Key, but should be a longer string of alphanumeric characters and can't start with HTTP referer unless it is served over HTTPS (default). Example: fjalrzxh/v45pw39sdfg87ejRZJM2UDFHFXPQ
+variable "aws_session_token" {}//provide aws session token here for IAM creation. This can be a long string of alphanumeric characters separated by spaces or dashes, and is not used to provide the AWS Access Key ID in this case (default). Example: EHVzcGxhZGlfYWNjb3Vs/v45pw+sdfg87ejRJM2UDFQ==
+variable "region_name" { default = ap-south-1 }//provide region name here. This will be used to configure the AWS provider   Example: us-east, asia (default)  etc...   
+resource "aws_vpc" vpc{ //creating VPC with public/private subnets and security groups using Terraform's IAM CRUD capabilities by defining in its declarative configuration file. A default set of settings is provided below: all IP address ranges are configured to use the CIDR prefixes that match Amazon VPC IPv4 Address Requirements
+  cidr_block = element(var.subnet_cidr, 0) //private subnets should have smaller network with /26 in each zone for better performance and security across availability zones   Example: "10.0.3.0/27" (default). Note that this value must be a multiple of the CIDR prefix length (/24, /25)
+  enable_dns = true //enable DNS Support in VPC or not default is set to false . If you want VPN connection support then select Yes otherwise no.Example: No(true),Yes/No (default).   Example : False    Default value for EnableDNS depends on the subnet's CIDR prefix 
+} "vpc_main" //resource block name, example vpcmain will be created in main module and used as base resource. Terraform uses a declarative configuration file to define what you want your infrastructure set up like how Amazon EC2 does it: by defining all the components (in this case subnets) that should exist on AWS
+```  The above HCL code snippet will create VPC, SubNet and Security Group using Terraform's IAM CRUD capabilities. It doesn’t include RDS creation or S3 storage with versioning; CloudWatch monitoring etc., you can provide more details as per your requirements in the next steps of this task

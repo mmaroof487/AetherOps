@@ -153,7 +153,7 @@ export default function ChatOnboarding({ onComplete }) {
 
     try {
       // Hit the AI requirement extraction backend
-      const res = await fetch('http://localhost:3001/api/extract-requirements', {
+      const res = await fetch('/api/extract-requirements', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversation: newHistory.map(m => ({ role: m.role, content: m.text })) })

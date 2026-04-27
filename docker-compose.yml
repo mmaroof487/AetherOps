@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  # Ollama - Local LLM service
+  ollama:
+    image: ollama/ollama:latest
+    container_name: shopops-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - shopops-network
+
+  # Backend - Express.js API
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: shopops-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ./backend/deployments:/app/backend/deployments
+      - ./backend/temp:/app/backend/temp
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - shopops-network
+    restart: unless-stopped
+
+  # Frontend - React + Vite
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: shopops-frontend
+    ports:
+      - "5175:5175"
+    environment:
+      - REACT_APP_API_URL=http://localhost:3001
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5175/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - shopops-network
+    restart: unless-stopped
+
+volumes:
+  ollama-data:
+    driver: local
+
+networks:
+  shopops-network:
+    driver: bridge

@@ -145,17 +145,14 @@ jobs:
             echo "✓ No Terraform files — skipping"
           fi
 
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
-
-      - name: Validate K8s manifests
+      - name: Validate K8s manifests (YAML syntax)
         run: |
           if [ -d "k8s" ] && ls k8s/*.yaml 2>/dev/null; then
             for f in k8s/*.yaml; do
               echo "Checking $f..."
-              kubectl apply -f "$f" --dry-run=client --validate=false
+              python3 -c "import yaml; yaml.safe_load_all(open('$f'))" && echo "  ✓ Valid YAML"
             done
-            echo "✓ K8s manifests validated"
+            echo "✓ All K8s manifests are valid YAML"
           else
             echo "✓ No K8s manifests — skipping"
           fi

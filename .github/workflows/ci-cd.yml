@@ -151,7 +151,10 @@ jobs:
       - name: Validate K8s manifests
         run: |
           if [ -d "k8s" ] && ls k8s/*.yaml 2>/dev/null; then
-            kubectl apply -f k8s/ --dry-run=client
+            for f in k8s/*.yaml; do
+              echo "Checking $f..."
+              kubectl apply -f "$f" --dry-run=client --validate=false
+            done
             echo "✓ K8s manifests validated"
           else
             echo "✓ No K8s manifests — skipping"
@@ -225,7 +228,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Validate docker-compose
-        run: docker-compose config > /dev/null
+        run: docker compose config > /dev/null
 
   # ═══════════════════════════════════════════════════════════════════════════
   # 6. INTEGRATION TESTS

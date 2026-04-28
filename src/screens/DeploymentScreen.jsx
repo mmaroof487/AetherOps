@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Syne, Mono, Spin } from "../components/ui/Atoms";
 import { StepHeader } from "../components/ui/Common";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, ExternalLink } from "lucide-react";
 import { styled } from "../stitches.config";
 
 const Container = styled("div", {
@@ -174,8 +174,9 @@ export default function DeploymentScreen({ architecture, businessConfig, onCompl
 	const [deploymentComplete, setDeploymentComplete] = useState(false);
 	const [error, setError] = useState(null);
 	const logsEndRef = useRef(null);
+	const appUrlOutput = outputs?.app_url?.value;
 	const appPublicIp = outputs?.app_public_ip?.value;
-	const appUrl = appPublicIp ? `http://${appPublicIp}:3000` : null;
+	const appUrl = appUrlOutput || (appPublicIp ? `http://${appPublicIp}:3000` : null);
 
 	useEffect(() => {
 		logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -305,7 +306,29 @@ export default function DeploymentScreen({ architecture, businessConfig, onCompl
 								marginBottom: "12px",
 								fontSize: "13px",
 							}}>
-							<strong>App URL:</strong> {appUrl}
+							<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+								<div>
+									<strong>App URL:</strong> {appUrl}
+								</div>
+								<a
+									href={appUrl}
+									target="_blank"
+									rel="noopener noreferrer"
+									style={{
+										color: "#2E7D32",
+										display: "flex",
+										alignItems: "center",
+										gap: "4px",
+										textDecoration: "none",
+										padding: "4px 8px",
+										borderRadius: "4px",
+										backgroundColor: "#C8E6C9",
+										fontSize: "12px",
+										fontWeight: "600",
+									}}>
+									Open App <ExternalLink size={14} />
+								</a>
+							</div>
 						</div>
 					)}
 					<OutputsContainer>

@@ -423,7 +423,7 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 
 		console.log("[scale] starting", { deploymentId: selectedDeployment.deploymentId, scalingForm });
 		setScalingInProgress(true);
-		setError("Applying scaling changes. This may take a few minutes...");
+		setError(null);
 		setScaleStatus({ type: "progress", message: "Applying scaling changes..." });
 
 		try {
@@ -464,7 +464,6 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 						const json = JSON.parse(line.slice(6));
 						console.log("[scale] event", json);
 						if (json.type === "progress") {
-							setError(json.message || "Scaling in progress...");
 							setScaleStatus({ type: "progress", message: json.message || "Scaling in progress..." });
 						}
 						if (json.type === "error") {
@@ -472,7 +471,7 @@ export default function EnhancedDashboardScreen({ deploymentId: activeDeployment
 							setScaleStatus({ type: "error", message: json.message || "Scaling failed." });
 						}
 						if (json.type === "complete") {
-							setError("Scaling completed successfully.");
+							setError(null);
 							setScaleStatus({ type: "success", message: "Scaling completed successfully." });
 							alert("Scaling completed successfully!");
 							setScalingForm({ instanceType: "", rdsSize: "", minReplicas: "", maxReplicas: "" });

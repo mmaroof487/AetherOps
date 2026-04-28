@@ -74,7 +74,44 @@ app.use(
 );
 
 // Promisify exec for async/await usage
-const execAsync = promisify(exec);
+// Replacement for execAsync using spawn for streaming output and avoiding buffer limits
+const execAsync = (command, options = {}) => {
+	return new Promise((resolve, reject) => {
+		const child = spawn(command, [], { ...options, shell: true });
+		let stdout = "";
+		let stderr = "";
+
+		child.stdout.on("data", (data) => {
+			const text = data.toString();
+			stdout += text;
+			// Real-time backend logging
+			process.stdout.write(text);
+		});
+
+		child.stderr.on("data", (data) => {
+			const text = data.toString();
+			stderr += text;
+			process.stderr.write(text);
+		});
+
+		child.on("close", (code) => {
+			if (code !== 0) {
+				const err = new Error(`Command failed with exit code ${code}`);
+				err.stdout = stdout;
+				err.stderr = stderr;
+				reject(err);
+			} else {
+				resolve({ stdout, stderr });
+			}
+		});
+
+		child.on("error", (err) => {
+			err.stdout = stdout;
+			err.stderr = stderr;
+			reject(err);
+		});
+	});
+};
 
 const OLLAMA = process.env.OLLAMA_URL || "http://127.0.0.1:11434/api/generate";
 const OLLAMA_URL = new URL(OLLAMA);
@@ -252,13 +289,27 @@ function summarizeTerraformError(errText = "") {
 	return firstMeaningful || "terraform preflight failed";
 }
 
+function meetsCriticalDeploymentRequirements(terraformCode = "") {
+	const text = String(terraformCode || "");
+	const checks = [
+		/variable\s+"repo_url"\s*\{/i,
+		/associate_public_ip_address\s*=\s*true/i,
+		/from_port\s*=\s*80/i,
+		/fallocate\s+-l\s+2G/i,
+		/nginx/i,
+		/git\s+clone/i
+	];
+
+	return checks.every((pattern) => pattern.test(text));
+}
+
 function buildFallbackTerraform(architecture = {}, businessConfig = {}) {
 	const components = architecture?.components || {};
 	// Default to creating an app server unless caller explicitly disables it.
 	const includeAppServer = components.appServer === null || components.appServer === false ? 0 : 1;
 	const includeStorage = components.storage ? 1 : 0;
 
-	return `# ShopOps fallback Terraform (deterministic template)
+	return `# ShopOps Production Infrastructure — Zero-Touch Automated Template
 terraform {
 	required_version = ">= 1.0"
 	required_providers {
@@ -284,7 +335,7 @@ variable "region" {
 
 variable "app_name" {
 	type    = string
-	default = "${businessConfig?.appName || "shopops"}"
+	default = "${(businessConfig?.appName || "shopops").replace(/[^a-zA-Z0-9-]/g, "")}"
 }
 
 variable "environment" {
@@ -294,7 +345,7 @@ variable "environment" {
 
 variable "ec2_ami" {
 	type    = string
-	default = "ami-0f5ee92e2d63afc18"
+	default = "ami-0f5ee92e2d63afc18" # Ubuntu 22.04 LTS ap-south-1
 }
 
 variable "ec2_instance_type" {
@@ -304,7 +355,7 @@ variable "ec2_instance_type" {
 
 variable "repo_url" {
 	type    = string
-	default = "${businessConfig?.repoUrl || ""}"
+	default = "${(businessConfig?.repoUrl || "").replace(/"/g, '\\"')}"
 }
 
 locals {
@@ -321,7 +372,7 @@ resource "random_id" "suffix" {
 }
 
 resource "aws_vpc" "main" {
-	cidr_block           = "10.50.0.0/16"
+	cidr_block           = "10.60.0.0/16"
 	enable_dns_support   = true
 	enable_dns_hostnames = true
 	tags                 = merge(local.tags, { Name = "\${var.app_name}-vpc" })
@@ -332,58 +383,35 @@ resource "aws_internet_gateway" "main" {
 	tags   = merge(local.tags, { Name = "\${var.app_name}-igw" })
 }
 
-resource "aws_subnet" "public_a" {
+resource "aws_subnet" "public" {
 	vpc_id                  = aws_vpc.main.id
-	cidr_block              = "10.50.1.0/24"
-	availability_zone       = "ap-south-1a"
+	cidr_block              = "10.60.1.0/24"
+	availability_zone       = "\${var.region}a"
 	map_public_ip_on_launch = true
-	tags                    = merge(local.tags, { Name = "\${var.app_name}-public-a" })
-}
-
-resource "aws_subnet" "public_b" {
-	vpc_id                  = aws_vpc.main.id
-	cidr_block              = "10.50.2.0/24"
-	availability_zone       = "ap-south-1b"
-	map_public_ip_on_launch = true
-	tags                    = merge(local.tags, { Name = "\${var.app_name}-public-b" })
+	tags                    = merge(local.tags, { Name = "\${var.app_name}-public" })
 }
 
 resource "aws_route_table" "public" {
 	vpc_id = aws_vpc.main.id
-
 	route {
 		cidr_block = "0.0.0.0/0"
 		gateway_id = aws_internet_gateway.main.id
 	}
-
 	tags = merge(local.tags, { Name = "\${var.app_name}-public-rt" })
 }
 
-resource "aws_route_table_association" "public_a" {
-	subnet_id      = aws_subnet.public_a.id
-	route_table_id = aws_route_table.public.id
-}
-
-resource "aws_route_table_association" "public_b" {
-	subnet_id      = aws_subnet.public_b.id
+resource "aws_route_table_association" "public" {
+	subnet_id      = aws_subnet.public.id
 	route_table_id = aws_route_table.public.id
 }
 
 resource "aws_security_group" "app" {
-	name        = "\${var.app_name}-app-sg"
-	description = "Application security group"
+	name        = "\${var.app_name}-app-sg-\${random_id.suffix.hex}"
 	vpc_id      = aws_vpc.main.id
 
 	ingress {
 		from_port   = 22
 		to_port     = 22
-		protocol    = "tcp"
-		cidr_blocks = ["0.0.0.0/0"]
-	}
-
-	ingress {
-		from_port   = 3000
-		to_port     = 3000
 		protocol    = "tcp"
 		cidr_blocks = ["0.0.0.0/0"]
 	}
@@ -395,6 +423,20 @@ resource "aws_security_group" "app" {
 		cidr_blocks = ["0.0.0.0/0"]
 	}
 
+	ingress {
+		from_port   = 3000
+		to_port     = 3010
+		protocol    = "tcp"
+		cidr_blocks = ["0.0.0.0/0"]
+	}
+
+	ingress {
+		from_port   = 5173
+		to_port     = 5175
+		protocol    = "tcp"
+		cidr_blocks = ["0.0.0.0/0"]
+	}
+
 	egress {
 		from_port   = 0
 		to_port     = 0
@@ -402,29 +444,181 @@ resource "aws_security_group" "app" {
 		cidr_blocks = ["0.0.0.0/0"]
 	}
 
-	tags = merge(local.tags, { Name = "\${var.app_name}-app-sg" })
+	tags = merge(local.tags, { Name = "\${var.app_name}-sg" })
 }
 
 resource "aws_instance" "app" {
-	count                  = ${includeAppServer}
-	ami                    = var.ec2_ami
-	instance_type          = var.ec2_instance_type
-	subnet_id              = aws_subnet.public_a.id
+	count                       = ${includeAppServer}
+	ami                         = var.ec2_ami
+	instance_type               = var.ec2_instance_type
+	subnet_id                   = aws_subnet.public.id
+	vpc_security_group_ids      = [aws_security_group.app.id]
 	associate_public_ip_address = true
-	vpc_security_group_ids = [aws_security_group.app.id]
+
+	root_block_device {
+		volume_size = 20
+		volume_type = "gp3"
+	}
+
+	user_data_replace_on_change = true
 	user_data = <<-EOF
 		#!/bin/bash
-		set -e
-		apt-get update -y
-		apt-get install -y nodejs npm git
+		# ShopOps Deterministic Deployment Engine v3 (Production Clean)
+		
+		# 1. INITIALIZATION & LOGGING
+		LOG_FILE="/home/ubuntu/setup.log"
+		APP_DIR="/home/ubuntu/app"
+		STATUS_FILE="/home/ubuntu/deploy_status"
 
-		cd /home/ubuntu
-		if [ -n "\${var.repo_url}" ]; then
-			rm -rf app
-			git clone "\${var.repo_url}" app
-			cd app
+		mkdir -p /home/ubuntu
+		touch "\$LOG_FILE"
+		chmod 666 "\$LOG_FILE"
+
+		exec > >(tee -a "\$LOG_FILE") 2>&1
+		echo "=== BOOTSTRAP START \$(date) ==="
+		echo "STARTING" > "\$STATUS_FILE"
+		chmod 666 "\$STATUS_FILE"
+
+		# 2. STRICT ERROR HANDLING
+		set -Eeuo pipefail
+		trap 'echo "[ERROR] line \$LINENO: \$BASH_COMMAND" >> "\$LOG_FILE"' ERR
+
+		# System setup helper
+		run_system() {
+			"\$@" || { echo "[WARN] Command failed: \$*"; return 0; }
+		}
+
+		# 3. SYSTEM SETUP (Running as Root)
+		echo "[STEP] Installing system dependencies..."
+		apt-get update -y
+		apt-get install -y git curl build-essential ca-certificates jq nginx docker.io docker-compose
+		
+		echo "[STEP] Installing Node 20..."
+		curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+		apt-get install -y nodejs
+		
+		node -v || { echo "[FATAL] Node install failed"; echo "FAILED: node_install" > "\$STATUS_FILE"; exit 1; }
+
+		systemctl enable docker
+		systemctl start docker
+		systemctl enable nginx
+		systemctl start nginx
+		usermod -aG docker ubuntu
+		
+		# 4. SWAP MEMORY
+		if [ ! -f /swapfile ]; then
+			echo "[STEP] Adding swap space..."
+			fallocate -l 2G /swapfile
+			chmod 600 /swapfile
+			mkswap /swapfile
+			swapon /swapfile
+			echo '/swapfile none swap sw 0 0' >> /etc/fstab
+		fi
+
+		# 5. REPO SETUP (Switching to Ubuntu User)
+		echo "[STEP] Cloning repo as ubuntu user..."
+		if [ -z "\${var.repo_url}" ]; then
+			echo "[FATAL] repo_url missing"; echo "FAILED: missing_url" > "\$STATUS_FILE"; exit 1
+		fi
+
+		rm -rf "\$APP_DIR"
+		if sudo -u ubuntu git clone "\${var.repo_url}" "\$APP_DIR"; then
+			echo "[OK] Repo cloned"
+			echo "CLONED" > "\$STATUS_FILE"
+		else
+			echo "[FATAL] Git clone failed"; echo "FAILED: clone" > "\$STATUS_FILE"; exit 1
+		fi
+
+		chown -R ubuntu:ubuntu "\$APP_DIR"
+
+		# 6. APP STARTUP (Delegated Script)
+		echo "[STEP] Starting app setup..."
+		echo "STARTING_APP" > "\$STATUS_FILE"
+		
+		cat > /home/ubuntu/deploy_start.sh <<'SCRIPT'
+		#!/usr/bin/env bash
+		set -Eeuo pipefail
+		APP_DIR="/home/ubuntu/app"
+		STATUS_FILE="/home/ubuntu/deploy_status"
+		cd "\$APP_DIR"
+
+		echo "[STEP] Starting app..."
+		
+		# ===== STATIC HTML HANDLER =====
+		if [ -f "/home/ubuntu/app/index.html" ]; then
+			echo "[INFO] Static HTML detected"
+			sudo rm -rf /var/www/html/*
+			sudo cp -r /home/ubuntu/app/* /var/www/html/
+			sudo systemctl restart nginx
+			echo "SUCCESS" > /home/ubuntu/deploy_status
+			echo "[SUCCESS] Static site deployed via nginx"
+			exit 0
+		fi
+
+		if [ -f docker-compose.yml ] || [ -f docker-compose.yaml ]; then
+			docker-compose up -d
+		elif [ -f package.json ]; then
 			npm install
-			nohup env HOST=0.0.0.0 PORT=3000 npm start > /home/ubuntu/app.log 2>&1 &
+			if grep -q '"vite"' package.json; then
+				npm run build
+				nohup npx serve -s dist -l 3000 --host 0.0.0.0 > app.log 2>&1 &
+			else
+				nohup npm start > app.log 2>&1 &
+			fi
+		fi
+
+		echo "[STEP] Waiting for process..."
+		sleep 5
+		if ! pgrep -f "node|serve|docker" > /dev/null; then
+			echo "[FATAL] App crashed"; echo "FAILED: app_crashed" > "\$STATUS_FILE"; exit 1
+		fi
+
+		echo "[STEP] Detecting port..."
+		for i in {1..10}; do
+			DETECTED_PORT=\$(ss -tuln | awk '/LISTEN/ && \$4 ~ /:3000|:3001|:5173|:5174|:8000|:8080/ {print \$4}' | cut -d: -f2 | head -n1 || echo "")
+			[ -n "\$DETECTED_PORT" ] && break
+			sleep 2
+		done
+
+		if [ -z "\$DETECTED_PORT" ]; then
+			echo "[FATAL] No port detected"; echo "FAILED: port_timeout" > "\$STATUS_FILE"; exit 1
+		fi
+
+		# Final Success Hook (back to root context for nginx)
+		echo "\$DETECTED_PORT" > /home/ubuntu/.app_port
+		SCRIPT
+
+		chmod +x /home/ubuntu/deploy_start.sh
+		sudo -u ubuntu bash /home/ubuntu/deploy_start.sh || { echo "FAILED: app_script" > "\$STATUS_FILE"; exit 1; }
+
+		# 7. NGINX CONFIG (As Root)
+		if [ -f /home/ubuntu/.app_port ]; then
+			APP_PORT=\$(cat /home/ubuntu/.app_port)
+			cat > /etc/nginx/sites-available/default <<-NGINX
+			server {
+				listen 80;
+				location / {
+					proxy_pass http://localhost:\$APP_PORT;
+					proxy_http_version 1.1;
+					proxy_set_header Upgrade \\\$http_upgrade;
+					proxy_set_header Connection 'upgrade';
+					proxy_set_header Host \\\$host;
+					proxy_cache_bypass \\\$http_upgrade;
+				}
+			}
+			NGINX
+			systemctl restart nginx
+
+			echo "[STEP] Final health check..."
+			for i in {1..90}; do
+				RESPONSE=\$(curl -s http://localhost:\$APP_PORT || echo "")
+				if [ -n "\$RESPONSE" ] && ! echo "\$RESPONSE" | grep -qi "Welcome to nginx"; then
+					echo "SUCCESS" > "\$STATUS_FILE"
+					exit 0
+				fi
+				sleep 2
+			done
+			echo "FAILED: health_timeout" > "\$STATUS_FILE"; exit 1
 		fi
 	EOF
 
@@ -437,30 +631,8 @@ resource "aws_s3_bucket" "assets" {
 	tags   = merge(local.tags, { Name = "\${var.app_name}-assets" })
 }
 
-resource "aws_s3_bucket_versioning" "assets" {
-	count  = ${includeStorage}
-	bucket = aws_s3_bucket.assets[0].id
-	versioning_configuration {
-		status = "Enabled"
-	}
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "assets" {
-	count  = ${includeStorage}
-	bucket = aws_s3_bucket.assets[0].id
-	rule {
-		apply_server_side_encryption_by_default {
-			sse_algorithm = "AES256"
-		}
-	}
-}
-
 output "vpc_id" {
 	value = aws_vpc.main.id
-}
-
-output "public_subnet_ids" {
-	value = [aws_subnet.public_a.id, aws_subnet.public_b.id]
 }
 
 output "app_instance_id" {
@@ -472,11 +644,7 @@ output "app_public_ip" {
 }
 
 output "app_url" {
-	value = try("http://\${aws_instance.app[0].public_ip}:3000", null)
-}
-
-output "assets_bucket_name" {
-	value = try(aws_s3_bucket.assets[0].bucket, null)
+	value = try("http://\${aws_instance.app[0].public_ip}", null)
 }
 `;
 }
@@ -2642,6 +2810,14 @@ app.post("/api/deploy", async (req, res) => {
 			});
 		}
 
+		const repoUrl = businessConfig.repoUrl;
+		if (!repoUrl || !repoUrl.startsWith("https://github.com/")) {
+			return res.status(400).json({
+				ok: false,
+				error: "Invalid or missing repository URL. Please provide a valid public GitHub repository URL.",
+			});
+		}
+
 		const deploymentId = `deploy_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 		const deployDir = path.join(DEPLOYMENTS_DIR, deploymentId);
 
@@ -2661,6 +2837,22 @@ STRICT RULES:
 - Use proper Terraform block syntax (multi-line)
 - Output ONLY code, no explanation
 
+MANDATORY EC2 BOOTSTRAP REQUIREMENTS:
+- Add variable repo_url and pass it into EC2 user_data
+- user_data must be a DETERMINISTIC DEPLOYMENT ENGINE:
+	1. EXECUTION CONTEXT: Script runs as root (standard user_data behavior)
+	2. INITIALIZATION: Log to /home/ubuntu/setup.log and track status in /home/ubuntu/deploy_status
+	3. SYSTEM SETUP: Install system dependencies (nginx, docker, node) directly as root
+	4. APP SETUP: Use 'sudo -u ubuntu' only for git clone, npm, and app execution
+	5. OWNERSHIP: Ensure 'chown -R ubuntu:ubuntu /home/ubuntu/app' after cloning
+	6. DYNAMIC PORT: Detect listening port via 'ss' and configure nginx proxy
+	7. VERIFICATION: Loop check for real app response (not nginx default) before reporting SUCCESS
+- Escape bash-style parameter expansion ($$) in user_data
+- Security group MUST open ports 22, 80, 3000-3010, and 5173-5175
+- Output app_url as "http://\${publicIp}"
+- INCREASE DISK SIZE: Set root_block_device volume_size = 20 and volume_type = "gp3"
+- INSTANCE TYPE: Use "t3.micro" as the default
+
 Generate production-ready Terraform HCL for the following AWS architecture:
 Tier: ${architecture?.tier || "Standard"}
 Components: ${JSON.stringify(architecture?.components || {})}
@@ -2674,16 +2866,18 @@ Requirements:
 - CloudWatch monitoring
 - Use variables for customization
 - Include outputs for deployed resources
-- Add variable repo_url and pass it to EC2 user_data
-- EC2 user_data must install git/node/npm, clone repo_url, run npm install, and start app with nohup on port 3000
 - Ensure EC2 has associate_public_ip_address = true
-- Ensure security group allows ports 22 and 3000 (and 80 optional)
+- Ensure security group allows ports 22, 80, 3000-3010, and 5173-5175
 
 Start with: terraform {
 `;
 		let terraformCode;
 		try {
 			terraformCode = await generateTerraformWithRetry(terraformPrompt, DEPLOY_TERRAFORM_ATTEMPTS);
+			if (!meetsCriticalDeploymentRequirements(terraformCode)) {
+				console.warn("[AI] Generated Terraform missed critical deployment automation requirements. Using deterministic fallback template.");
+				terraformCode = buildFallbackTerraform(architecture, businessConfig);
+			}
 		} catch (genErr) {
 			console.warn("[AI] Falling back to deterministic Terraform template:", genErr.message);
 			terraformCode = buildFallbackTerraform(architecture, businessConfig);
@@ -2822,15 +3016,26 @@ repo_url = "${(businessConfig.repoUrl || "").replace(/"/g, '\\"')}"
 				maxBuffer: 10 * 1024 * 1024,
 			});
 			const outputs = JSON.parse(outputResult.stdout);
+			const readOutputValue = (key, fallback = null) => {
+				if (!outputs || !Object.prototype.hasOwnProperty.call(outputs, key)) return fallback;
+				return outputs[key]?.value ?? fallback;
+			};
+
+			const instanceId = readOutputValue("app_instance_id") || readOutputValue("instance_id") || null;
+			const publicIp = readOutputValue("app_public_ip") || readOutputValue("public_ip") || null;
+			const appUrl = readOutputValue("app_url") || (publicIp ? `http://${publicIp}:3000` : null);
 
 			// Save deployment info
 			const deploymentInfo = {
 				deploymentId,
 				createdAt: new Date(),
-				status: "active",
+				status: "running",
 				architecture,
 				businessConfig,
 				outputs,
+				instanceId,
+				publicIp,
+				appUrl,
 				credentials: {
 					region: req.session.awsCredentials.region,
 				},
@@ -2838,19 +3043,67 @@ repo_url = "${(businessConfig.repoUrl || "").replace(/"/g, '\\"')}"
 			};
 			fs.writeFileSync(path.join(deployDir, "deployment.json"), JSON.stringify(deploymentInfo, null, 2));
 
-			sendEvent("complete", {
-				deploymentId,
-				message: "Deployment successful!",
-				outputs,
-			});
+			// Step 6: Backend Health Check Polling
+			sendEvent("progress", { step: 6, message: "Performing deep connectivity health checks..." });
+			let appStatus = "failed";
+			let detailedStatus = "STARTING";
+
+			if (appUrl) {
+				for (let i = 0; i < 18; i++) { // Polling every 10s for up to 3 mins
+					try {
+						const controller = new AbortController();
+						const timeout = setTimeout(() => controller.abort(), 8000);
+						const response = await fetch(appUrl, { signal: controller.signal });
+						clearTimeout(timeout);
+						const body = await response.text();
+						
+						if (body.includes("Welcome to nginx") || body.includes("Test Page")) {
+							detailedStatus = "INFRA_READY";
+							sendEvent("progress", { step: 6, message: "Infrastructure is up. Waiting for application code to take over..." });
+						} else if (response.ok || (response.status >= 200 && response.status < 500)) {
+							appStatus = "running";
+							detailedStatus = "SUCCESS";
+							break;
+						} else {
+							detailedStatus = "APP_ERROR";
+						}
+					} catch (e) {
+						detailedStatus = "BOOTING";
+					}
+					await new Promise((resolve) => setTimeout(resolve, 10000));
+					sendEvent("progress", { step: 6, message: `Deep health check attempt ${i + 2}/18 (${detailedStatus})...` });
+				}
+			}
+
+			if (appStatus === "running") {
+				sendEvent("progress", { step: 6, message: "✓ Application is fully operational and responding" });
+				sendEvent("complete", {
+					deploymentId,
+					message: "Deployment successful!",
+					instanceId,
+					publicIp,
+					appUrl,
+					status: "running",
+					detailedStatus,
+					outputs,
+				});
+			} else {
+				sendEvent("error", { 
+					message: `Deployment timed out or failed. Last status: ${detailedStatus}. The app might still be building or failed to start.`,
+					status: "failed",
+					detailedStatus
+				});
+			}
 		} catch (err) {
-			sendEvent("error", { message: "Failed to retrieve outputs: " + err.message });
+			const detailedError = err.stdout || err.stderr || err.message;
+			sendEvent("error", { message: "Failed to retrieve outputs: " + detailedError });
 		}
 
 		res.end();
 	} catch (err) {
-		console.error("Deploy error:", err.message);
-		res.status(500).json({ ok: false, error: err.message });
+		const detailedError = err.stdout || err.stderr || err.message;
+		console.error("Deploy error:", detailedError);
+		res.status(500).json({ ok: false, error: detailedError });
 	}
 });
 
@@ -2969,8 +3222,9 @@ app.post("/api/destroy/:deploymentId", async (req, res) => {
 
 		res.end();
 	} catch (err) {
-		console.error("Destroy error:", err.message);
-		res.status(500).json({ ok: false, error: err.message });
+		const detailedError = err.stdout || err.stderr || err.message;
+		console.error("Destroy error:", detailedError);
+		res.status(500).json({ ok: false, error: detailedError });
 	}
 });
 
@@ -3174,8 +3428,9 @@ app.post("/api/scale/:deploymentId", async (req, res) => {
 
 		res.end();
 	} catch (err) {
-		console.error("Scale error:", err.message);
-		res.status(500).json({ ok: false, error: err.message });
+		const detailedError = err.stdout || err.stderr || err.message;
+		console.error("Scale error:", detailedError);
+		res.status(500).json({ ok: false, error: detailedError });
 	}
 });
 

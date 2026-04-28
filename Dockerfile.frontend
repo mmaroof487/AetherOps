@@ -12,7 +12,6 @@ RUN npm ci
 # Copy source
 COPY src/ ./src/
 COPY vite.config.js index.html ./
-COPY stitches.config.js ./
 
 # Build
 RUN npm run build

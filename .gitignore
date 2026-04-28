@@ -47,3 +47,28 @@ crash.log
 *.njsproj
 *.sln
 *.sw?
+
+# Docker
+docker-compose.override.yml
+nginx-logs/
+ssl/
+
+# CI/CD build artifacts
+*.tar.gz
+*.zip
+inventory.ini
+tfplan
+tfplan.txt
+outputs.json
+
+# Kubernetes secrets (never commit)
+k8s/*-secret.yaml
+k8s/*-secrets.yaml
+
+# Ansible
+*.retry
+
+# OS
+Thumbs.db
+Desktop.ini
+*~
